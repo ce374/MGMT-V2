@@ -1,0 +1,2030 @@
+---MGMT .zscripts---
+total 60
+drwxrwxr-x  2 z z 4096 Nov  6 14:49 .
+drwxrwxr-x 15 z z 4096 Nov  6 14:50 ..
+-rwxrwxr-x  1 z z 7258 Nov  6 14:49 build.sh
+-rwxrwxr-x  1 z z  901 Nov  6 14:49 database-runtime-build.sh
+-rw-rw-r--  1 z z    5 Nov  6 14:49 dev.pid
+-rwxrwxr-x  1 z z 4168 Nov  6 14:49 dev.sh
+-rwxrwxr-x  1 z z 2365 Nov  6 14:49 mini-services-build.sh
+-rwxrwxr-x  1 z z 1951 Nov  6 14:49 mini-services-install.sh
+-rwxrwxr-x  1 z z 3326 Nov  6 14:49 mini-services-start.sh
+-rwxrwxr-x  1 z z 4190 Nov  6 14:49 python-runtime-build.sh
+-rwxrwxr-x  1 z z 4419 Nov  6 14:49 start.sh
+=== /home/z/MGMT/.zscripts/build.sh ===
+#!/bin/bash
+
+# 将 stderr 重定向到 stdout，避免 execute_command 因为 stderr 输出而报错
+exec 2>&1
+
+set -e
+
+# 获取脚本所在目录（.zscripts 目录，即 workspace-agent/.zscripts）
+# 使用 $0 获取脚本路径（兼容 sh 和 bash）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Next.js 项目路径
+NEXTJS_PROJECT_DIR="/home/z/my-project"
+
+# 检查 Next.js 项目目录是否存在
+if [ ! -d "$NEXTJS_PROJECT_DIR" ]; then
+    echo "❌ 错误: Next.js 项目目录不存在: $NEXTJS_PROJECT_DIR"
+    exit 1
+fi
+
+echo "🚀 开始构建 Next.js 应用和 mini-services..."
+echo "📁 Next.js 项目路径: $NEXTJS_PROJECT_DIR"
+
+# 切换到 Next.js 项目目录
+cd "$NEXTJS_PROJECT_DIR" || exit 1
+
+# 设置环境变量
+export NEXT_TELEMETRY_DISABLED=1
+
+BUILD_DIR="/tmp/build_fullstack_$BUILD_ID"
+echo "📁 清理并创建构建目录: $BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+
+# 安装依赖
+echo "📦 安装依赖..."
+bun install
+
+# 构建 Next.js 应用
+echo "🔨 构建 Next.js 应用..."
+bun run build
+
+# 校验 standalone 服务端入口是否生成（部署成功率守卫）。
+# Next 仅在 next.config 含 output:"standalone" 时产出 .next/standalone/server.js。
+# 若用户/AI 编辑项目时改写或删除了该配置，bun run build 仍会成功（static 照常
+# 产出、退出码 0），但 standalone 缺失——打出的包里没有 server.js，部署到 FC 后
+# start.sh 找不到 next-service-dist/server.js → 不启动 Next → Caddy:81 反代空的
+# 3000 → FC 健康检查 120s 超时失败（线上 warmup_412 / FunctionNotStarted 的主因）。
+# 这里做一次自愈：仅在确实缺失时，给 next.config 补回 output:"standalone" 并重建。
+# 正常项目（已生成 server.js）整段跳过，不读写任何用户文件。
+if [ ! -f ".next/standalone/server.js" ]; then
+    echo "⚠️  构建未产出 .next/standalone/server.js，开始自愈 next.config 的 output 配置..."
+    NEXT_CONFIG_FILE="$(ls next.config.ts next.config.js next.config.mjs next.config.cjs 2>/dev/null | head -1)"
+
+    if [ -z "$NEXT_CONFIG_FILE" ]; then
+        echo "❌ 构建失败：未找到 next.config.*，无法生成 standalone 部署产物。"
+        exit 1
+    fi
+
+    if grep -Eq "output\s*:\s*['\"]standalone['\"]" "$NEXT_CONFIG_FILE"; then
+        # 已声明 standalone 却仍没产出 server.js，说明不是配置缺失（可能 build 真
+        # 出错、自定义 distDir 等）。不臆改用户配置，直接失败并暴露原因。
+        echo "❌ 构建失败：$NEXT_CONFIG_FILE 已含 output:\"standalone\"，但仍未生成 .next/standalone/server.js。"
+        echo "   请检查上方构建日志中的报错或项目自定义的构建配置。"
+        exit 1
+    fi
+
+    if grep -Eq "output\s*:\s*['\"]" "$NEXT_CONFIG_FILE"; then
+        # 已显式声明了其它 output（如 "export" 静态导出 / "standalone" 之外的值）。
+        # "export" 与本部署模型（standalone + 自定义 server）互斥——不能注入第二个
+        # output 覆盖用户意图（JS 对象重复 key 后者生效，注入也无效）。明确失败。
+        echo "❌ 构建失败：$NEXT_CONFIG_FILE 已声明非 standalone 的 output（如 \"export\" 静态导出），与当前部署模型不兼容。"
+        echo "   当前部署需要 output:\"standalone\"。请改为 standalone，或确认该项目是否应走静态托管而非部署沙箱。"
+        exit 1
+    fi
+
+    echo "🔧 检测到 $NEXT_CONFIG_FILE 缺少 output:\"standalone\"，自动注入后重新构建..."
+    cp "$NEXT_CONFIG_FILE" "${NEXT_CONFIG_FILE}.zbak"
+    # 在第一个配置对象字面量起始的 { 之后插入 output:"standalone"，
+    # 覆盖脚手架常见写法：const nextConfig...= {  /  export default {  /  module.exports = {
+    perl -0pi -e 's/((?:const\s+\w+[^=]*=|export\s+default|module\.exports\s*=)\s*\{)/$1\n  output: "standalone",/' "$NEXT_CONFIG_FILE"
+
+    if ! grep -Eq "output\s*:\s*['\"]standalone['\"]" "$NEXT_CONFIG_FILE"; then
+        echo "❌ 未能匹配到可注入的配置对象，next.config 写法非常规，需人工添加 output:\"standalone\"。"
+        echo "   当前 $NEXT_CONFIG_FILE 内容："
+        cat "$NEXT_CONFIG_FILE"
+        mv "${NEXT_CONFIG_FILE}.zbak" "$NEXT_CONFIG_FILE"
+        exit 1
+    fi
+
+    echo "🔨 已注入 output:\"standalone\"，重新构建..."
+    bun run build
+
+    if [ ! -f ".next/standalone/server.js" ]; then
+        echo "❌ 注入 output:\"standalone\" 并重建后，仍未生成 .next/standalone/server.js。"
+        exit 1
+    fi
+    echo "✅ 自愈成功：standalone 服务端入口已生成。"
+fi
+
+# 构建 mini-services
+# 检查 Next.js 项目目录下是否有 mini-services 目录
+if [ -d "$NEXTJS_PROJECT_DIR/mini-services" ]; then
+    echo "🔨 构建 mini-services..."
+    # 使用 workspace-agent 目录下的 mini-services 脚本
+    sh "$SCRIPT_DIR/mini-services-install.sh"
+    sh "$SCRIPT_DIR/mini-services-build.sh"
+
+    # 复制 mini-services-start.sh 到 mini-services-dist 目录
+    echo "  - 复制 mini-services-start.sh 到 $BUILD_DIR"
+    cp "$SCRIPT_DIR/mini-services-start.sh" "$BUILD_DIR/mini-services-start.sh"
+    chmod +x "$BUILD_DIR/mini-services-start.sh"
+else
+    echo "ℹ️  mini-services 目录不存在，跳过"
+fi
+
+# 将所有构建产物复制到临时构建目录
+echo "📦 收集构建产物到 $BUILD_DIR..."
+
+# 复制 Next.js standalone 构建输出
+if [ -d ".next/standalone" ]; then
+    echo "  - 复制 .next/standalone"
+    cp -r .next/standalone "$BUILD_DIR/next-service-dist/"
+fi
+
+# 复制 Next.js 静态文件
+if [ -d ".next/static" ]; then
+    echo "  - 复制 .next/static"
+    mkdir -p "$BUILD_DIR/next-service-dist/.next"
+    cp -r .next/static "$BUILD_DIR/next-service-dist/.next/"
+fi
+
+# 复制 public 目录
+if [ -d "public" ]; then
+    echo "  - 复制 public"
+    cp -r public "$BUILD_DIR/next-service-dist/"
+fi
+
+# Python 不继承 workspace-agent 的 /home/z/.venv。若项目包含 Python 源码或
+# 依赖清单，在构建期将生产依赖固化到产物，并保持 Python 源码的项目相对路径。
+PROJECT_DIR="$NEXTJS_PROJECT_DIR" BUILD_DIR="$BUILD_DIR" \
+    bash "$SCRIPT_DIR/python-runtime-build.sh"
+
+# 有 Preview 数据库时复制现有数据；没有时直接在部署产物中初始化空库。
+# 模板源码不携带 db/custom.db，不能依赖 dev.sh 必须在 Deploy 前成功运行过。
+PROJECT_DIR="$NEXTJS_PROJECT_DIR" BUILD_DIR="$BUILD_DIR" \
+    bash "$SCRIPT_DIR/database-runtime-build.sh"
+
+# 复制 Caddyfile（如果存在）
+if [ -f "Caddyfile" ]; then
+    echo "  - 复制 Caddyfile"
+    cp Caddyfile "$BUILD_DIR/"
+else
+    echo "ℹ️  Caddyfile 不存在，跳过"
+fi
+
+# 复制 start.sh 脚本
+echo "  - 复制 start.sh 到 $BUILD_DIR"
+cp "$SCRIPT_DIR/start.sh" "$BUILD_DIR/start.sh"
+chmod +x "$BUILD_DIR/start.sh"
+
+# 打包到 $BUILD_DIR.tar.gz
+PACKAGE_FILE="${BUILD_DIR}.tar.gz"
+echo ""
+echo "📦 打包构建产物到 $PACKAGE_FILE..."
+cd "$BUILD_DIR" || exit 1
+tar -czf "$PACKAGE_FILE" .
+cd - > /dev/null || exit 1
+
+# # 清理临时目录
+# rm -rf "$BUILD_DIR"
+
+echo ""
+echo "✅ 构建完成！所有产物已打包到 $PACKAGE_FILE"
+echo "📊 打包文件大小:"
+ls -lh "$PACKAGE_FILE"
+=== /home/z/MGMT/.zscripts/database-runtime-build.sh ===
+#!/bin/bash
+
+set -euo pipefail
+
+PROJECT_DIR="${PROJECT_DIR:-/home/z/my-project}"
+BUILD_DIR="${BUILD_DIR:?BUILD_DIR is required}"
+SOURCE_DB_DIR="$PROJECT_DIR/db"
+SOURCE_DB_PATH="$SOURCE_DB_DIR/custom.db"
+TARGET_DB_DIR="$BUILD_DIR/db"
+TARGET_DB_PATH="$TARGET_DB_DIR/custom.db"
+
+mkdir -p "$TARGET_DB_DIR"
+
+if [ -f "$SOURCE_DB_PATH" ]; then
+    echo "🗄️  复制 Preview 数据库到构建产物..."
+    cp -a "$SOURCE_DB_DIR/." "$TARGET_DB_DIR/"
+else
+    echo "ℹ️  未找到 Preview 数据库 db/custom.db，将初始化空的生产数据库"
+fi
+
+echo "🗄️  同步构建产物中的数据库结构..."
+(
+    cd "$PROJECT_DIR"
+    DATABASE_URL="file:$TARGET_DB_PATH" bun run db:push
+)
+
+if [ ! -f "$TARGET_DB_PATH" ]; then
+    echo "❌ 数据库初始化命令执行成功，但未生成 $TARGET_DB_PATH"
+    exit 1
+fi
+
+echo "✅ 构建产物数据库已准备完成"
+ls -lah "$TARGET_DB_DIR"
+=== /home/z/MGMT/.zscripts/dev.pid ===
+1038
+=== /home/z/MGMT/.zscripts/dev.sh ===
+#!/bin/bash
+
+set -euo pipefail
+
+# 获取脚本所在目录（.zscripts）
+# 使用 $0 获取脚本路径（与 build.sh 保持一致）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+log_step_start() {
+	local step_name="$1"
+	echo "=========================================="
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting: $step_name"
+	echo "=========================================="
+	export STEP_START_TIME
+	STEP_START_TIME=$(date +%s)
+}
+
+log_step_end() {
+	local step_name="${1:-Unknown step}"
+	local end_time
+	end_time=$(date +%s)
+	local duration=$((end_time - STEP_START_TIME))
+	echo "=========================================="
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed: $step_name"
+	echo "[LOG] Step: $step_name | Duration: ${duration}s"
+	echo "=========================================="
+	echo ""
+}
+
+start_mini_services() {
+	local mini_services_dir="$PROJECT_DIR/mini-services"
+	local started_count=0
+
+	log_step_start "Starting mini-services"
+	if [ ! -d "$mini_services_dir" ]; then
+		echo "Mini-services directory not found, skipping..."
+		log_step_end "Starting mini-services"
+		return 0
+	fi
+
+	echo "Found mini-services directory, scanning for sub-services..."
+
+	for service_dir in "$mini_services_dir"/*; do
+		if [ ! -d "$service_dir" ]; then
+			continue
+		fi
+
+		local service_name
+		service_name=$(basename "$service_dir")
+		echo "Checking service: $service_name"
+
+		if [ ! -f "$service_dir/package.json" ]; then
+			echo "[$service_name] No package.json found, skipping..."
+			continue
+		fi
+
+		if ! grep -q '"dev"' "$service_dir/package.json"; then
+			echo "[$service_name] No dev script found, skipping..."
+			continue
+		fi
+
+		echo "Starting $service_name in background..."
+		(
+			cd "$service_dir"
+			echo "[$service_name] Installing dependencies..."
+			bun install
+			echo "[$service_name] Running bun run dev..."
+			exec bun run dev
+		) >"$PROJECT_DIR/.zscripts/mini-service-${service_name}.log" 2>&1 &
+
+		local service_pid=$!
+		echo "[$service_name] Started in background (PID: $service_pid)"
+		echo "[$service_name] Log: $PROJECT_DIR/.zscripts/mini-service-${service_name}.log"
+		disown "$service_pid" 2>/dev/null || true
+		started_count=$((started_count + 1))
+	done
+
+	echo "Mini-services startup completed. Started $started_count service(s)."
+	log_step_end "Starting mini-services"
+}
+
+wait_for_service() {
+	local host="$1"
+	local port="$2"
+	local service_name="$3"
+	local max_attempts="${4:-60}"
+	local attempt=1
+
+	echo "Waiting for $service_name to be ready on $host:$port..."
+
+	while [ "$attempt" -le "$max_attempts" ]; do
+		if curl -s --connect-timeout 2 --max-time 5 "http://$host:$port" >/dev/null 2>&1; then
+			echo "$service_name is ready!"
+			return 0
+		fi
+
+		echo "Attempt $attempt/$max_attempts: $service_name not ready yet, waiting..."
+		sleep 1
+		attempt=$((attempt + 1))
+	done
+
+	echo "ERROR: $service_name failed to start within $max_attempts seconds"
+	return 1
+}
+
+cleanup() {
+	if [ -n "${DEV_PID:-}" ] && kill -0 "$DEV_PID" >/dev/null 2>&1; then
+		echo "Stopping Next.js dev server (PID: $DEV_PID)..."
+		kill "$DEV_PID" >/dev/null 2>&1 || true
+	fi
+}
+
+trap cleanup EXIT INT TERM
+
+cd "$PROJECT_DIR"
+
+if ! command -v bun >/dev/null 2>&1; then
+	echo "ERROR: bun is not installed or not in PATH"
+	exit 1
+fi
+
+log_step_start "bun install"
+echo "[BUN] Installing dependencies..."
+bun install
+log_step_end "bun install"
+
+log_step_start "bun run db:push"
+echo "[BUN] Setting up database..."
+bun run db:push
+log_step_end "bun run db:push"
+
+log_step_start "Starting Next.js dev server"
+echo "[BUN] Starting development server..."
+bun run dev &
+DEV_PID=$!
+log_step_end "Starting Next.js dev server"
+
+log_step_start "Waiting for Next.js dev server"
+wait_for_service "localhost" "3000" "Next.js dev server"
+log_step_end "Waiting for Next.js dev server"
+
+log_step_start "Health check"
+echo "[BUN] Performing health check..."
+curl -fsS localhost:3000 >/dev/null
+echo "[BUN] Health check passed"
+log_step_end "Health check"
+
+start_mini_services
+
+echo "Next.js dev server is running in background (PID: $DEV_PID)."
+echo "Use 'kill $DEV_PID' to stop it."
+disown "$DEV_PID" 2>/dev/null || true
+unset DEV_PID
+=== /home/z/MGMT/.zscripts/mini-services-build.sh ===
+#!/bin/bash
+
+# 配置项
+ROOT_DIR="/home/z/my-project/mini-services"
+DIST_DIR="/tmp/build_fullstack_$BUILD_ID/mini-services-dist"
+
+main() {
+    echo "🚀 开始批量构建..."
+    
+    # 检查 rootdir 是否存在
+    if [ ! -d "$ROOT_DIR" ]; then
+        echo "ℹ️  目录 $ROOT_DIR 不存在，跳过构建"
+        return
+    fi
+    
+    # 创建输出目录（如果不存在）
+    mkdir -p "$DIST_DIR"
+    
+    # 统计变量
+    success_count=0
+    fail_count=0
+    
+    # 遍历 mini-services 目录下的所有文件夹
+    for dir in "$ROOT_DIR"/*; do
+        # 检查是否是目录且包含 package.json
+        if [ -d "$dir" ] && [ -f "$dir/package.json" ]; then
+            project_name=$(basename "$dir")
+            
+            # 智能查找入口文件 (按优先级查找)
+            entry_path=""
+            for entry in "src/index.ts" "index.ts" "src/index.js" "index.js"; do
+                if [ -f "$dir/$entry" ]; then
+                    entry_path="$dir/$entry"
+                    break
+                fi
+            done
+            
+            if [ -z "$entry_path" ]; then
+                echo "⚠️  跳过 $project_name: 未找到入口文件 (index.ts/js)"
+                continue
+            fi
+            
+            echo ""
+            echo "📦 正在构建: $project_name..."
+            
+            # 使用 bun build CLI 构建
+            output_file="$DIST_DIR/mini-service-$project_name.js"
+            
+            if bun build "$entry_path" \
+                --outfile "$output_file" \
+                --target bun \
+                --minify; then
+                echo "✅ $project_name 构建成功 -> $output_file"
+                success_count=$((success_count + 1))
+            else
+                echo "❌ $project_name 构建失败"
+                fail_count=$((fail_count + 1))
+            fi
+        fi
+    done
+    
+    if [ -f ./.zscripts/mini-services-start.sh ]; then
+        cp ./.zscripts/mini-services-start.sh "$DIST_DIR/mini-services-start.sh"
+        chmod +x "$DIST_DIR/mini-services-start.sh"
+    fi
+    
+    echo ""
+    echo "🎉 所有任务完成！"
+    if [ $success_count -gt 0 ] || [ $fail_count -gt 0 ]; then
+        echo "✅ 成功: $success_count 个"
+        if [ $fail_count -gt 0 ]; then
+            echo "❌ 失败: $fail_count 个"
+        fi
+    fi
+}
+
+main
+
+=== /home/z/MGMT/.zscripts/mini-services-install.sh ===
+#!/bin/bash
+
+# 配置项
+ROOT_DIR="/home/z/my-project/mini-services"
+
+main() {
+    echo "🚀 开始批量安装依赖..."
+    
+    # 检查 rootdir 是否存在
+    if [ ! -d "$ROOT_DIR" ]; then
+        echo "ℹ️  目录 $ROOT_DIR 不存在，跳过安装"
+        return
+    fi
+    
+    # 统计变量
+    success_count=0
+    fail_count=0
+    failed_projects=""
+    
+    # 遍历 mini-services 目录下的所有文件夹
+    for dir in "$ROOT_DIR"/*; do
+        # 检查是否是目录且包含 package.json
+        if [ -d "$dir" ] && [ -f "$dir/package.json" ]; then
+            project_name=$(basename "$dir")
+            echo ""
+            echo "📦 正在安装依赖: $project_name..."
+            
+            # 进入项目目录并执行 bun install
+            if (cd "$dir" && bun install); then
+                echo "✅ $project_name 依赖安装成功"
+                success_count=$((success_count + 1))
+            else
+                echo "❌ $project_name 依赖安装失败"
+                fail_count=$((fail_count + 1))
+                if [ -z "$failed_projects" ]; then
+                    failed_projects="$project_name"
+                else
+                    failed_projects="$failed_projects $project_name"
+                fi
+            fi
+        fi
+    done
+    
+    # 汇总结果
+    echo ""
+    echo "=================================================="
+    if [ $success_count -gt 0 ] || [ $fail_count -gt 0 ]; then
+        echo "🎉 安装完成！"
+        echo "✅ 成功: $success_count 个"
+        if [ $fail_count -gt 0 ]; then
+            echo "❌ 失败: $fail_count 个"
+            echo ""
+            echo "失败的项目:"
+            for project in $failed_projects; do
+                echo "  - $project"
+            done
+        fi
+    else
+        echo "ℹ️  未找到任何包含 package.json 的项目"
+    fi
+    echo "=================================================="
+}
+
+main
+
+=== /home/z/MGMT/.zscripts/mini-services-start.sh ===
+#!/bin/sh
+
+# 配置项
+DIST_DIR="./mini-services-dist"
+
+# 存储所有子进程的 PID
+pids=""
+
+# 清理函数：优雅关闭所有服务
+cleanup() {
+    echo ""
+    echo "🛑 正在关闭所有服务..."
+    
+    # 发送 SIGTERM 信号给所有子进程
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            service_name=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+            echo "   关闭进程 $pid ($service_name)..."
+            kill -TERM "$pid" 2>/dev/null
+        fi
+    done
+    
+    # 等待所有进程退出（最多等待 5 秒）
+    sleep 1
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            # 如果还在运行，等待最多 4 秒
+            timeout=4
+            while [ $timeout -gt 0 ] && kill -0 "$pid" 2>/dev/null; do
+                sleep 1
+                timeout=$((timeout - 1))
+            done
+            # 如果仍然在运行，强制关闭
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "   强制关闭进程 $pid..."
+                kill -KILL "$pid" 2>/dev/null
+            fi
+        fi
+    done
+    
+    echo "✅ 所有服务已关闭"
+}
+
+main() {
+    echo "🚀 开始启动所有 mini services..."
+    
+    # 检查 dist 目录是否存在
+    if [ ! -d "$DIST_DIR" ]; then
+        echo "ℹ️  目录 $DIST_DIR 不存在"
+        return
+    fi
+    
+    # 查找所有 mini-service-*.js 文件
+    service_files=""
+    for file in "$DIST_DIR"/mini-service-*.js; do
+        if [ -f "$file" ]; then
+            if [ -z "$service_files" ]; then
+                service_files="$file"
+            else
+                service_files="$service_files $file"
+            fi
+        fi
+    done
+    
+    # 计算服务文件数量
+    service_count=0
+    for file in $service_files; do
+        service_count=$((service_count + 1))
+    done
+    
+    if [ $service_count -eq 0 ]; then
+        echo "ℹ️  未找到任何 mini service 文件"
+        return
+    fi
+    
+    echo "📦 找到 $service_count 个服务，开始启动..."
+    echo ""
+    
+    # 启动每个服务
+    for file in $service_files; do
+        service_name=$(basename "$file" .js | sed 's/mini-service-//')
+        echo "▶️  启动服务: $service_name..."
+        
+        # 使用 bun 运行服务（后台运行）
+        bun "$file" &
+        pid=$!
+        if [ -z "$pids" ]; then
+            pids="$pid"
+        else
+            pids="$pids $pid"
+        fi
+        
+        # 等待一小段时间检查进程是否成功启动
+        sleep 0.5
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "❌ $service_name 启动失败"
+            # 从字符串中移除失败的 PID
+            pids=$(echo "$pids" | sed "s/\b$pid\b//" | sed 's/  */ /g' | sed 's/^ *//' | sed 's/ *$//')
+        else
+            echo "✅ $service_name 已启动 (PID: $pid)"
+        fi
+    done
+    
+    # 计算运行中的服务数量
+    running_count=0
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            running_count=$((running_count + 1))
+        fi
+    done
+    
+    echo ""
+    echo "🎉 所有服务已启动！共 $running_count 个服务正在运行"
+    echo ""
+    echo "💡 按 Ctrl+C 停止所有服务"
+    echo ""
+    
+    # 等待所有后台进程
+    wait
+}
+
+main
+
+=== /home/z/MGMT/.zscripts/python-runtime-build.sh ===
+#!/bin/bash
+
+set -euo pipefail
+
+PROJECT_DIR="${PROJECT_DIR:-/home/z/my-project}"
+BUILD_DIR="${BUILD_DIR:?BUILD_DIR is required}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
+NEXT_DIST_DIR="$BUILD_DIR/next-service-dist"
+PYTHON_RUNTIME_DIR="$BUILD_DIR/python-runtime"
+PYTHON_PACKAGES_DIR="$PYTHON_RUNTIME_DIR/site-packages"
+
+has_python_sources() {
+    find "$PROJECT_DIR" \
+        \( -type d \( -name '.git' \
+        -o -name '.next' \
+        -o -name '.venv' \
+        -o -name 'node_modules' \
+        -o -name '__pycache__' \
+        -o -name 'mini-services' \
+        -o -name 'upload' \
+        -o -name 'download' \
+        \) -prune \) \
+        -o -type f \( -name '*.py' -o -name '*.pyi' \) -print -quit | grep -q .
+}
+
+if ! has_python_sources \
+    && [ ! -f "$PROJECT_DIR/requirements.txt" ] \
+    && [ ! -f "$PROJECT_DIR/pyproject.toml" ]; then
+    echo "ℹ️  未检测到 Python 源码或依赖清单，跳过 Python runtime 构建"
+    exit 0
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "❌ 检测到 Python 项目，但构建环境中没有 uv"
+    exit 1
+fi
+
+echo "🐍 检测到 Python runtime，目标版本: $PYTHON_VERSION"
+mkdir -p "$NEXT_DIST_DIR" "$PYTHON_PACKAGES_DIR"
+
+install_requirements() {
+    local requirements_file="$1"
+    local target_dir="${2:-$PYTHON_PACKAGES_DIR}"
+    if [ ! -s "$requirements_file" ]; then
+        echo "ℹ️  Python 依赖清单为空，跳过依赖安装"
+        return 0
+    fi
+
+    echo "📦 根据 $(basename "$requirements_file") 固化 Python 生产依赖..."
+    uv pip install \
+        --python "$PYTHON_VERSION" \
+        --target "$target_dir" \
+        --requirements "$requirements_file"
+
+    # --target 生成的 console scripts 会保留构建机 Python 的绝对 shebang。
+    # 改成 Runner 内可解析的 python，并由 start scripts 将该 bin 目录加入 PATH。
+    if [ -d "$target_dir/bin" ]; then
+        for script in "$target_dir"/bin/*; do
+            [ -f "$script" ] || continue
+            perl -0pi -e 's/\A#![^\n]*python[^\n]*\n/#!\/usr\/bin\/env python\n/' "$script"
+        done
+    fi
+}
+
+install_pyproject() {
+    local project_dir="$1"
+    local target_dir="$2"
+    local output_name="$3"
+    local requirements_file="$PYTHON_RUNTIME_DIR/$output_name"
+
+    if [ -f "$project_dir/uv.lock" ]; then
+        uv export \
+            --project "$project_dir" \
+            --frozen \
+            --no-dev \
+            --no-emit-project \
+            --format requirements.txt \
+            --output-file "$requirements_file"
+    else
+        uv pip compile \
+            "$project_dir/pyproject.toml" \
+            --python-version "$PYTHON_VERSION" \
+            --output-file "$requirements_file"
+    fi
+    install_requirements "$requirements_file" "$target_dir"
+}
+
+if [ -f "$PROJECT_DIR/pyproject.toml" ] && [ -f "$PROJECT_DIR/uv.lock" ]; then
+    echo "🔒 使用 pyproject.toml + uv.lock 导出生产依赖..."
+    install_pyproject "$PROJECT_DIR" "$PYTHON_PACKAGES_DIR" "requirements.lock.txt"
+elif [ -f "$PROJECT_DIR/requirements.txt" ]; then
+    cp "$PROJECT_DIR/requirements.txt" "$PYTHON_RUNTIME_DIR/requirements.txt"
+    install_requirements "$PYTHON_RUNTIME_DIR/requirements.txt"
+elif [ -f "$PROJECT_DIR/pyproject.toml" ]; then
+    echo "📦 pyproject.toml 未配套 uv.lock，解析生产依赖..."
+    install_pyproject "$PROJECT_DIR" "$PYTHON_PACKAGES_DIR" "requirements.txt"
+else
+    echo "⚠️  检测到 Python 源码，但没有 requirements.txt 或 pyproject.toml；仅支持 Python 标准库"
+fi
+
+if has_python_sources; then
+    echo "📄 复制 Python 源码到部署项目，保持相对路径..."
+    (
+        cd "$PROJECT_DIR"
+        find . \
+            \( -type d \( -name '.git' \
+            -o -name '.next' \
+            -o -name '.venv' \
+            -o -name 'node_modules' \
+            -o -name '__pycache__' \
+            -o -name 'mini-services' \
+            -o -name 'upload' \
+            -o -name 'download' \
+            \) -prune \) \
+            -o -type f \( -name '*.py' -o -name '*.pyi' \) -print0 \
+            | tar --null -T - -cf -
+    ) | tar -C "$NEXT_DIST_DIR" -xf -
+fi
+
+echo "✅ Python runtime 已固化到部署产物"
+=== /home/z/MGMT/.zscripts/start.sh ===
+#!/bin/sh
+
+set -e
+
+# 获取脚本所在目录
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_DIR="$SCRIPT_DIR"
+
+# 存储所有子进程的 PID
+pids=""
+
+# 清理函数：优雅关闭所有服务
+cleanup() {
+    echo ""
+    echo "🛑 正在关闭所有服务..."
+    
+    # 发送 SIGTERM 信号给所有子进程
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            service_name=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+            echo "   关闭进程 $pid ($service_name)..."
+            kill -TERM "$pid" 2>/dev/null
+        fi
+    done
+    
+    # 等待所有进程退出（最多等待 5 秒）
+    sleep 1
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            # 如果还在运行，等待最多 4 秒
+            timeout=4
+            while [ $timeout -gt 0 ] && kill -0 "$pid" 2>/dev/null; do
+                sleep 1
+                timeout=$((timeout - 1))
+            done
+            # 如果仍然在运行，强制关闭
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "   强制关闭进程 $pid..."
+                kill -KILL "$pid" 2>/dev/null
+            fi
+        fi
+    done
+    
+    echo "✅ 所有服务已关闭"
+    exit 0
+}
+
+echo "🚀 开始启动所有服务..."
+echo ""
+
+# 切换到构建目录
+cd "$BUILD_DIR" || exit 1
+
+ls -lah
+
+DEFAULT_PACKAGED_DB_PATH="/app/db/custom.db"
+DEFAULT_PACKAGED_DATABASE_URL="file:$DEFAULT_PACKAGED_DB_PATH"
+
+# Python 依赖在构建阶段安装进部署产物，不复用 Sandbox 的 /home/z/.venv。
+# Next.js 及其启动的子进程都会继承这组路径。
+if [ -d "/app/python-runtime/site-packages" ]; then
+    export PYTHONPATH="/app/python-runtime/site-packages:/app/next-service-dist${PYTHONPATH:+:$PYTHONPATH}"
+    export PATH="/app/python-runtime/site-packages/bin:$PATH"
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONUNBUFFERED=1
+    echo "🐍 已启用部署包内 Python runtime: $(python --version 2>&1)"
+fi
+
+# 启动 Next.js 服务器
+if [ -f "./next-service-dist/server.js" ]; then
+    echo "🚀 启动 Next.js 服务器..."
+    cd next-service-dist/ || exit 1
+    
+    # 设置环境变量
+    export NODE_ENV=production
+    export PORT="${PORT:-3000}"
+    export HOSTNAME="${HOSTNAME:-0.0.0.0}"
+    export DATABASE_URL="${DATABASE_URL:-$DEFAULT_PACKAGED_DATABASE_URL}"
+
+    if [ "$DATABASE_URL" = "$DEFAULT_PACKAGED_DATABASE_URL" ]; then
+        if [ ! -f "$DEFAULT_PACKAGED_DB_PATH" ]; then
+            echo "❌ 未找到打包后的数据库文件 $DEFAULT_PACKAGED_DB_PATH"
+            echo "   为避免生产环境启动到空数据库，启动已终止"
+            exit 1
+        fi
+
+        echo "🗄️  当前使用打包数据库: $DEFAULT_PACKAGED_DB_PATH"
+    else
+        echo "🗄️  当前使用外部指定数据库: $DATABASE_URL"
+    fi
+    
+    # 后台启动 Next.js
+    bun server.js &
+    NEXT_PID=$!
+    pids="$NEXT_PID"
+    
+    # 等待一小段时间检查进程是否成功启动
+    sleep 1
+    if ! kill -0 "$NEXT_PID" 2>/dev/null; then
+        echo "❌ Next.js 服务器启动失败"
+        exit 1
+    else
+        echo "✅ Next.js 服务器已启动 (PID: $NEXT_PID, Port: $PORT)"
+    fi
+    
+    cd ../
+else
+    echo "⚠️  未找到 Next.js 服务器文件: ./next-service-dist/server.js"
+fi
+
+# 启动 mini-services
+if [ -f "./mini-services-start.sh" ]; then
+    echo "🚀 启动 mini-services..."
+    
+    # 运行启动脚本（从根目录运行，脚本内部会处理 mini-services-dist 目录）
+    sh ./mini-services-start.sh &
+    MINI_PID=$!
+    pids="$pids $MINI_PID"
+    
+    # 等待一小段时间检查进程是否成功启动
+    sleep 1
+    if ! kill -0 "$MINI_PID" 2>/dev/null; then
+        echo "⚠️  mini-services 可能启动失败，但继续运行..."
+    else
+        echo "✅ mini-services 已启动 (PID: $MINI_PID)"
+    fi
+elif [ -d "./mini-services-dist" ]; then
+    echo "⚠️  未找到 mini-services 启动脚本，但目录存在"
+else
+    echo "ℹ️  mini-services 目录不存在，跳过"
+fi
+
+# 启动 Caddy（如果存在 Caddyfile）
+echo "🚀 启动 Caddy..."
+
+# Caddy 作为前台进程运行（主进程）
+echo "✅ Caddy 已启动（前台运行）"
+echo ""
+echo "🎉 所有服务已启动！"
+echo ""
+echo "💡 按 Ctrl+C 停止所有服务"
+echo ""
+
+# Caddy 作为主进程运行
+exec caddy run --config Caddyfile --adapter caddyfile
+
+---MY-PROJECT .zscripts---
+total 72
+drwxr-xr-x 2 z z 4096 Nov  6 14:47 .
+drwxr-xr-x 1 z z 4096 Nov  6 14:47 ..
+-rwxr-xr-x 1 z z 7258 Jul 28 08:11 build.sh
+-rwxr-xr-x 1 z z  901 Jul 28 08:11 database-runtime-build.sh
+-rw-rw-r-- 1 z z 7033 Nov  6 14:50 dev.log
+-rw-rw-r-- 1 z z    5 Nov  6 14:47 dev.pid
+-rwxr-xr-x 1 z z 4168 May 12 10:06 dev.sh
+-rwxr-xr-x 1 z z 2365 May 12 10:06 mini-services-build.sh
+-rwxr-xr-x 1 z z 1951 May 12 10:06 mini-services-install.sh
+-rwxr-xr-x 1 z z 3326 May 12 10:06 mini-services-start.sh
+-rwxr-xr-x 1 z z 4190 Jul 21 06:48 python-runtime-build.sh
+-rwxr-xr-x 1 z z 4419 Jul 21 06:48 start.sh
+=== /home/z/my-project/.zscripts/build.sh ===
+#!/bin/bash
+
+# 将 stderr 重定向到 stdout，避免 execute_command 因为 stderr 输出而报错
+exec 2>&1
+
+set -e
+
+# 获取脚本所在目录（.zscripts 目录，即 workspace-agent/.zscripts）
+# 使用 $0 获取脚本路径（兼容 sh 和 bash）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Next.js 项目路径
+NEXTJS_PROJECT_DIR="/home/z/my-project"
+
+# 检查 Next.js 项目目录是否存在
+if [ ! -d "$NEXTJS_PROJECT_DIR" ]; then
+    echo "❌ 错误: Next.js 项目目录不存在: $NEXTJS_PROJECT_DIR"
+    exit 1
+fi
+
+echo "🚀 开始构建 Next.js 应用和 mini-services..."
+echo "📁 Next.js 项目路径: $NEXTJS_PROJECT_DIR"
+
+# 切换到 Next.js 项目目录
+cd "$NEXTJS_PROJECT_DIR" || exit 1
+
+# 设置环境变量
+export NEXT_TELEMETRY_DISABLED=1
+
+BUILD_DIR="/tmp/build_fullstack_$BUILD_ID"
+echo "📁 清理并创建构建目录: $BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+
+# 安装依赖
+echo "📦 安装依赖..."
+bun install
+
+# 构建 Next.js 应用
+echo "🔨 构建 Next.js 应用..."
+bun run build
+
+# 校验 standalone 服务端入口是否生成（部署成功率守卫）。
+# Next 仅在 next.config 含 output:"standalone" 时产出 .next/standalone/server.js。
+# 若用户/AI 编辑项目时改写或删除了该配置，bun run build 仍会成功（static 照常
+# 产出、退出码 0），但 standalone 缺失——打出的包里没有 server.js，部署到 FC 后
+# start.sh 找不到 next-service-dist/server.js → 不启动 Next → Caddy:81 反代空的
+# 3000 → FC 健康检查 120s 超时失败（线上 warmup_412 / FunctionNotStarted 的主因）。
+# 这里做一次自愈：仅在确实缺失时，给 next.config 补回 output:"standalone" 并重建。
+# 正常项目（已生成 server.js）整段跳过，不读写任何用户文件。
+if [ ! -f ".next/standalone/server.js" ]; then
+    echo "⚠️  构建未产出 .next/standalone/server.js，开始自愈 next.config 的 output 配置..."
+    NEXT_CONFIG_FILE="$(ls next.config.ts next.config.js next.config.mjs next.config.cjs 2>/dev/null | head -1)"
+
+    if [ -z "$NEXT_CONFIG_FILE" ]; then
+        echo "❌ 构建失败：未找到 next.config.*，无法生成 standalone 部署产物。"
+        exit 1
+    fi
+
+    if grep -Eq "output\s*:\s*['\"]standalone['\"]" "$NEXT_CONFIG_FILE"; then
+        # 已声明 standalone 却仍没产出 server.js，说明不是配置缺失（可能 build 真
+        # 出错、自定义 distDir 等）。不臆改用户配置，直接失败并暴露原因。
+        echo "❌ 构建失败：$NEXT_CONFIG_FILE 已含 output:\"standalone\"，但仍未生成 .next/standalone/server.js。"
+        echo "   请检查上方构建日志中的报错或项目自定义的构建配置。"
+        exit 1
+    fi
+
+    if grep -Eq "output\s*:\s*['\"]" "$NEXT_CONFIG_FILE"; then
+        # 已显式声明了其它 output（如 "export" 静态导出 / "standalone" 之外的值）。
+        # "export" 与本部署模型（standalone + 自定义 server）互斥——不能注入第二个
+        # output 覆盖用户意图（JS 对象重复 key 后者生效，注入也无效）。明确失败。
+        echo "❌ 构建失败：$NEXT_CONFIG_FILE 已声明非 standalone 的 output（如 \"export\" 静态导出），与当前部署模型不兼容。"
+        echo "   当前部署需要 output:\"standalone\"。请改为 standalone，或确认该项目是否应走静态托管而非部署沙箱。"
+        exit 1
+    fi
+
+    echo "🔧 检测到 $NEXT_CONFIG_FILE 缺少 output:\"standalone\"，自动注入后重新构建..."
+    cp "$NEXT_CONFIG_FILE" "${NEXT_CONFIG_FILE}.zbak"
+    # 在第一个配置对象字面量起始的 { 之后插入 output:"standalone"，
+    # 覆盖脚手架常见写法：const nextConfig...= {  /  export default {  /  module.exports = {
+    perl -0pi -e 's/((?:const\s+\w+[^=]*=|export\s+default|module\.exports\s*=)\s*\{)/$1\n  output: "standalone",/' "$NEXT_CONFIG_FILE"
+
+    if ! grep -Eq "output\s*:\s*['\"]standalone['\"]" "$NEXT_CONFIG_FILE"; then
+        echo "❌ 未能匹配到可注入的配置对象，next.config 写法非常规，需人工添加 output:\"standalone\"。"
+        echo "   当前 $NEXT_CONFIG_FILE 内容："
+        cat "$NEXT_CONFIG_FILE"
+        mv "${NEXT_CONFIG_FILE}.zbak" "$NEXT_CONFIG_FILE"
+        exit 1
+    fi
+
+    echo "🔨 已注入 output:\"standalone\"，重新构建..."
+    bun run build
+
+    if [ ! -f ".next/standalone/server.js" ]; then
+        echo "❌ 注入 output:\"standalone\" 并重建后，仍未生成 .next/standalone/server.js。"
+        exit 1
+    fi
+    echo "✅ 自愈成功：standalone 服务端入口已生成。"
+fi
+
+# 构建 mini-services
+# 检查 Next.js 项目目录下是否有 mini-services 目录
+if [ -d "$NEXTJS_PROJECT_DIR/mini-services" ]; then
+    echo "🔨 构建 mini-services..."
+    # 使用 workspace-agent 目录下的 mini-services 脚本
+    sh "$SCRIPT_DIR/mini-services-install.sh"
+    sh "$SCRIPT_DIR/mini-services-build.sh"
+
+    # 复制 mini-services-start.sh 到 mini-services-dist 目录
+    echo "  - 复制 mini-services-start.sh 到 $BUILD_DIR"
+    cp "$SCRIPT_DIR/mini-services-start.sh" "$BUILD_DIR/mini-services-start.sh"
+    chmod +x "$BUILD_DIR/mini-services-start.sh"
+else
+    echo "ℹ️  mini-services 目录不存在，跳过"
+fi
+
+# 将所有构建产物复制到临时构建目录
+echo "📦 收集构建产物到 $BUILD_DIR..."
+
+# 复制 Next.js standalone 构建输出
+if [ -d ".next/standalone" ]; then
+    echo "  - 复制 .next/standalone"
+    cp -r .next/standalone "$BUILD_DIR/next-service-dist/"
+fi
+
+# 复制 Next.js 静态文件
+if [ -d ".next/static" ]; then
+    echo "  - 复制 .next/static"
+    mkdir -p "$BUILD_DIR/next-service-dist/.next"
+    cp -r .next/static "$BUILD_DIR/next-service-dist/.next/"
+fi
+
+# 复制 public 目录
+if [ -d "public" ]; then
+    echo "  - 复制 public"
+    cp -r public "$BUILD_DIR/next-service-dist/"
+fi
+
+# Python 不继承 workspace-agent 的 /home/z/.venv。若项目包含 Python 源码或
+# 依赖清单，在构建期将生产依赖固化到产物，并保持 Python 源码的项目相对路径。
+PROJECT_DIR="$NEXTJS_PROJECT_DIR" BUILD_DIR="$BUILD_DIR" \
+    bash "$SCRIPT_DIR/python-runtime-build.sh"
+
+# 有 Preview 数据库时复制现有数据；没有时直接在部署产物中初始化空库。
+# 模板源码不携带 db/custom.db，不能依赖 dev.sh 必须在 Deploy 前成功运行过。
+PROJECT_DIR="$NEXTJS_PROJECT_DIR" BUILD_DIR="$BUILD_DIR" \
+    bash "$SCRIPT_DIR/database-runtime-build.sh"
+
+# 复制 Caddyfile（如果存在）
+if [ -f "Caddyfile" ]; then
+    echo "  - 复制 Caddyfile"
+    cp Caddyfile "$BUILD_DIR/"
+else
+    echo "ℹ️  Caddyfile 不存在，跳过"
+fi
+
+# 复制 start.sh 脚本
+echo "  - 复制 start.sh 到 $BUILD_DIR"
+cp "$SCRIPT_DIR/start.sh" "$BUILD_DIR/start.sh"
+chmod +x "$BUILD_DIR/start.sh"
+
+# 打包到 $BUILD_DIR.tar.gz
+PACKAGE_FILE="${BUILD_DIR}.tar.gz"
+echo ""
+echo "📦 打包构建产物到 $PACKAGE_FILE..."
+cd "$BUILD_DIR" || exit 1
+tar -czf "$PACKAGE_FILE" .
+cd - > /dev/null || exit 1
+
+# # 清理临时目录
+# rm -rf "$BUILD_DIR"
+
+echo ""
+echo "✅ 构建完成！所有产物已打包到 $PACKAGE_FILE"
+echo "📊 打包文件大小:"
+ls -lh "$PACKAGE_FILE"
+=== /home/z/my-project/.zscripts/database-runtime-build.sh ===
+#!/bin/bash
+
+set -euo pipefail
+
+PROJECT_DIR="${PROJECT_DIR:-/home/z/my-project}"
+BUILD_DIR="${BUILD_DIR:?BUILD_DIR is required}"
+SOURCE_DB_DIR="$PROJECT_DIR/db"
+SOURCE_DB_PATH="$SOURCE_DB_DIR/custom.db"
+TARGET_DB_DIR="$BUILD_DIR/db"
+TARGET_DB_PATH="$TARGET_DB_DIR/custom.db"
+
+mkdir -p "$TARGET_DB_DIR"
+
+if [ -f "$SOURCE_DB_PATH" ]; then
+    echo "🗄️  复制 Preview 数据库到构建产物..."
+    cp -a "$SOURCE_DB_DIR/." "$TARGET_DB_DIR/"
+else
+    echo "ℹ️  未找到 Preview 数据库 db/custom.db，将初始化空的生产数据库"
+fi
+
+echo "🗄️  同步构建产物中的数据库结构..."
+(
+    cd "$PROJECT_DIR"
+    DATABASE_URL="file:$TARGET_DB_PATH" bun run db:push
+)
+
+if [ ! -f "$TARGET_DB_PATH" ]; then
+    echo "❌ 数据库初始化命令执行成功，但未生成 $TARGET_DB_PATH"
+    exit 1
+fi
+
+echo "✅ 构建产物数据库已准备完成"
+ls -lah "$TARGET_DB_DIR"
+=== /home/z/my-project/.zscripts/dev.log ===
+==========================================
+[2026-11-06 14:47:36] Starting: bun install
+==========================================
+[BUN] Installing dependencies...
+[0.71ms] ".env"
+bun install v1.3.14 (0d9b296a)
+
++ @tailwindcss/postcss@4.1.18
++ @types/react@19.2.8
++ @types/react-dom@19.2.3
++ bun-types@1.3.6
++ eslint@9.39.2
++ eslint-config-next@16.1.3
++ tailwindcss@4.1.18
++ tw-animate-css@1.4.0
++ typescript@5.9.3
++ @dnd-kit/core@6.3.1
++ @dnd-kit/sortable@10.0.0
++ @dnd-kit/utilities@3.2.2
++ @hookform/resolvers@5.2.2
++ @mdxeditor/editor@3.52.3
++ @prisma/client@6.19.2
++ @radix-ui/react-accordion@1.2.12
++ @radix-ui/react-alert-dialog@1.1.15
++ @radix-ui/react-aspect-ratio@1.1.8
++ @radix-ui/react-avatar@1.1.11
++ @radix-ui/react-checkbox@1.3.3
++ @radix-ui/react-collapsible@1.1.12
++ @radix-ui/react-context-menu@2.2.16
++ @radix-ui/react-dialog@1.1.15
++ @radix-ui/react-dropdown-menu@2.1.16
++ @radix-ui/react-hover-card@1.1.15
++ @radix-ui/react-label@2.1.8
++ @radix-ui/react-menubar@1.1.16
++ @radix-ui/react-navigation-menu@1.2.14
++ @radix-ui/react-popover@1.1.15
++ @radix-ui/react-progress@1.1.8
++ @radix-ui/react-radio-group@1.3.8
++ @radix-ui/react-scroll-area@1.2.10
++ @radix-ui/react-select@2.2.6
++ @radix-ui/react-separator@1.1.8
++ @radix-ui/react-slider@1.3.6
++ @radix-ui/react-slot@1.2.4
++ @radix-ui/react-switch@1.2.6
++ @radix-ui/react-tabs@1.1.13
++ @radix-ui/react-toast@1.2.15
++ @radix-ui/react-toggle@1.1.10
++ @radix-ui/react-toggle-group@1.1.11
++ @radix-ui/react-tooltip@1.2.8
++ @reactuses/core@6.1.9
++ @tanstack/react-query@5.90.19
++ @tanstack/react-table@8.21.3
++ class-variance-authority@0.7.1
++ clsx@2.1.1
++ cmdk@1.1.1
++ date-fns@4.1.0
++ embla-carousel-react@8.6.0
++ framer-motion@12.26.2
++ input-otp@1.4.2
++ lucide-react@0.525.0
++ next@16.1.3
++ next-auth@4.24.13
++ next-intl@4.7.0
++ next-themes@0.4.6
++ prisma@6.19.2
++ react@19.2.3
++ react-day-picker@9.13.0
++ react-dom@19.2.3
++ react-hook-form@7.71.1
++ react-markdown@10.1.0
++ react-resizable-panels@3.0.6
++ react-syntax-highlighter@15.6.6
++ recharts@2.15.4
++ sharp@0.34.5
++ sonner@2.0.7
++ tailwind-merge@3.4.0
++ tailwindcss-animate@1.0.7
++ uuid@11.1.0
++ vaul@1.1.2
++ z-ai-web-dev-sdk@0.0.18
++ zod@4.3.5
++ zustand@5.0.10
+
+827 packages installed [7.64s]
+==========================================
+[2026-11-06 14:47:43] Completed: bun install
+[LOG] Step: bun install | Duration: 7s
+==========================================
+
+==========================================
+[2026-11-06 14:47:43] Starting: bun run db:push
+==========================================
+[BUN] Setting up database...
+$ prisma db push --accept-data-loss
+Environment variables loaded from .env
+Prisma schema loaded from prisma/schema.prisma
+Datasource "db": SQLite database "custom.db" at "file:/home/z/my-project/db/custom.db"
+
+SQLite database custom.db created at file:/home/z/my-project/db/custom.db
+
+🚀  Your database is now in sync with your Prisma schema. Done in 7ms
+
+Running generate... (Use --skip-generate to skip the generators)
+[2K[1A[2K[GRunning generate... - Prisma Client
+[2K[1A[2K[G✔ Generated Prisma Client (v6.19.2) to ./node_modules/@prisma/client in 52ms
+┌─────────────────────────────────────────────────────────┐
+│  Update available 6.19.2 -> 8.0.0-rc.30                 │
+│                                                         │
+│  This is a major update - please follow the guide at    │
+│  https://pris.ly/d/major-version-upgrade                │
+│                                                         │
+│  Run the following to update                            │
+│    npm i --save-dev prisma@latest                       │
+│    npm i @prisma/client@latest                          │
+└─────────────────────────────────────────────────────────┘
+
+==========================================
+[2026-11-06 14:47:44] Completed: bun run db:push
+[LOG] Step: bun run db:push | Duration: 1s
+==========================================
+
+==========================================
+[2026-11-06 14:47:44] Starting: Starting Next.js dev server
+==========================================
+[BUN] Starting development server...
+==========================================
+$ next dev -p 3000 2>&1 | tee dev.log
+[2026-11-06 14:47:44] Completed: Starting Next.js dev server
+[LOG] Step: Starting Next.js dev server | Duration: 0s
+==========================================
+
+==========================================
+[2026-11-06 14:47:44] Starting: Waiting for Next.js dev server
+==========================================
+Waiting for Next.js dev server to be ready on localhost:3000...
+Attempt 1/60: Next.js dev server not ready yet, waiting...
+▲ Next.js 16.1.3 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://21.0.5.203:3000
+- Environments: .env
+
+✓ Starting...
+Attention: Next.js now collects completely anonymous telemetry regarding usage.
+This information is used to shape Next.js' roadmap and prioritize features.
+You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+https://nextjs.org/telemetry
+
+
+  We detected TypeScript in your project and reconfigured your tsconfig.json file for you.
+  The following suggested values were added to your tsconfig.json. These values can be changed to fit your project's needs:
+
+  	- include was updated to add '.next/dev/types/**/*.ts'
+
+  The following mandatory changes were made to your tsconfig.json:
+
+  	- jsx was set to react-jsx (next.js uses the React automatic runtime)
+
+✓ Ready in 577ms
+○ Compiling / ...
+Next.js dev server is ready!
+ GET / 200 in 3.3s (compile: 3.2s, render: 112ms)
+==========================================
+[2026-11-06 14:47:49] Completed: Waiting for Next.js dev server
+[LOG] Step: Waiting for Next.js dev server | Duration: 5s
+==========================================
+
+==========================================
+[2026-11-06 14:47:49] Starting: Health check
+==========================================
+[BUN] Performing health check...
+ GET / 200 in 25ms (compile: 2ms, render: 23ms)
+[BUN] Health check passed
+==========================================
+[2026-11-06 14:47:49] Completed: Health check
+[LOG] Step: Health check | Duration: 0s
+==========================================
+
+==========================================
+[2026-11-06 14:47:49] Starting: Starting mini-services
+==========================================
+Found mini-services directory, scanning for sub-services...
+Mini-services startup completed. Started 0 service(s).
+==========================================
+[2026-11-06 14:47:49] Completed: Starting mini-services
+[LOG] Step: Starting mini-services | Duration: 0s
+==========================================
+
+Next.js dev server is running in background (PID: 1175).
+Use 'kill 1175' to stop it.
+
+=== /home/z/my-project/.zscripts/dev.pid ===
+1038
+=== /home/z/my-project/.zscripts/dev.sh ===
+#!/bin/bash
+
+set -euo pipefail
+
+# 获取脚本所在目录（.zscripts）
+# 使用 $0 获取脚本路径（与 build.sh 保持一致）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+log_step_start() {
+	local step_name="$1"
+	echo "=========================================="
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting: $step_name"
+	echo "=========================================="
+	export STEP_START_TIME
+	STEP_START_TIME=$(date +%s)
+}
+
+log_step_end() {
+	local step_name="${1:-Unknown step}"
+	local end_time
+	end_time=$(date +%s)
+	local duration=$((end_time - STEP_START_TIME))
+	echo "=========================================="
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] Completed: $step_name"
+	echo "[LOG] Step: $step_name | Duration: ${duration}s"
+	echo "=========================================="
+	echo ""
+}
+
+start_mini_services() {
+	local mini_services_dir="$PROJECT_DIR/mini-services"
+	local started_count=0
+
+	log_step_start "Starting mini-services"
+	if [ ! -d "$mini_services_dir" ]; then
+		echo "Mini-services directory not found, skipping..."
+		log_step_end "Starting mini-services"
+		return 0
+	fi
+
+	echo "Found mini-services directory, scanning for sub-services..."
+
+	for service_dir in "$mini_services_dir"/*; do
+		if [ ! -d "$service_dir" ]; then
+			continue
+		fi
+
+		local service_name
+		service_name=$(basename "$service_dir")
+		echo "Checking service: $service_name"
+
+		if [ ! -f "$service_dir/package.json" ]; then
+			echo "[$service_name] No package.json found, skipping..."
+			continue
+		fi
+
+		if ! grep -q '"dev"' "$service_dir/package.json"; then
+			echo "[$service_name] No dev script found, skipping..."
+			continue
+		fi
+
+		echo "Starting $service_name in background..."
+		(
+			cd "$service_dir"
+			echo "[$service_name] Installing dependencies..."
+			bun install
+			echo "[$service_name] Running bun run dev..."
+			exec bun run dev
+		) >"$PROJECT_DIR/.zscripts/mini-service-${service_name}.log" 2>&1 &
+
+		local service_pid=$!
+		echo "[$service_name] Started in background (PID: $service_pid)"
+		echo "[$service_name] Log: $PROJECT_DIR/.zscripts/mini-service-${service_name}.log"
+		disown "$service_pid" 2>/dev/null || true
+		started_count=$((started_count + 1))
+	done
+
+	echo "Mini-services startup completed. Started $started_count service(s)."
+	log_step_end "Starting mini-services"
+}
+
+wait_for_service() {
+	local host="$1"
+	local port="$2"
+	local service_name="$3"
+	local max_attempts="${4:-60}"
+	local attempt=1
+
+	echo "Waiting for $service_name to be ready on $host:$port..."
+
+	while [ "$attempt" -le "$max_attempts" ]; do
+		if curl -s --connect-timeout 2 --max-time 5 "http://$host:$port" >/dev/null 2>&1; then
+			echo "$service_name is ready!"
+			return 0
+		fi
+
+		echo "Attempt $attempt/$max_attempts: $service_name not ready yet, waiting..."
+		sleep 1
+		attempt=$((attempt + 1))
+	done
+
+	echo "ERROR: $service_name failed to start within $max_attempts seconds"
+	return 1
+}
+
+cleanup() {
+	if [ -n "${DEV_PID:-}" ] && kill -0 "$DEV_PID" >/dev/null 2>&1; then
+		echo "Stopping Next.js dev server (PID: $DEV_PID)..."
+		kill "$DEV_PID" >/dev/null 2>&1 || true
+	fi
+}
+
+trap cleanup EXIT INT TERM
+
+cd "$PROJECT_DIR"
+
+if ! command -v bun >/dev/null 2>&1; then
+	echo "ERROR: bun is not installed or not in PATH"
+	exit 1
+fi
+
+log_step_start "bun install"
+echo "[BUN] Installing dependencies..."
+bun install
+log_step_end "bun install"
+
+log_step_start "bun run db:push"
+echo "[BUN] Setting up database..."
+bun run db:push
+log_step_end "bun run db:push"
+
+log_step_start "Starting Next.js dev server"
+echo "[BUN] Starting development server..."
+bun run dev &
+DEV_PID=$!
+log_step_end "Starting Next.js dev server"
+
+log_step_start "Waiting for Next.js dev server"
+wait_for_service "localhost" "3000" "Next.js dev server"
+log_step_end "Waiting for Next.js dev server"
+
+log_step_start "Health check"
+echo "[BUN] Performing health check..."
+curl -fsS localhost:3000 >/dev/null
+echo "[BUN] Health check passed"
+log_step_end "Health check"
+
+start_mini_services
+
+echo "Next.js dev server is running in background (PID: $DEV_PID)."
+echo "Use 'kill $DEV_PID' to stop it."
+disown "$DEV_PID" 2>/dev/null || true
+unset DEV_PID
+=== /home/z/my-project/.zscripts/mini-services-build.sh ===
+#!/bin/bash
+
+# 配置项
+ROOT_DIR="/home/z/my-project/mini-services"
+DIST_DIR="/tmp/build_fullstack_$BUILD_ID/mini-services-dist"
+
+main() {
+    echo "🚀 开始批量构建..."
+    
+    # 检查 rootdir 是否存在
+    if [ ! -d "$ROOT_DIR" ]; then
+        echo "ℹ️  目录 $ROOT_DIR 不存在，跳过构建"
+        return
+    fi
+    
+    # 创建输出目录（如果不存在）
+    mkdir -p "$DIST_DIR"
+    
+    # 统计变量
+    success_count=0
+    fail_count=0
+    
+    # 遍历 mini-services 目录下的所有文件夹
+    for dir in "$ROOT_DIR"/*; do
+        # 检查是否是目录且包含 package.json
+        if [ -d "$dir" ] && [ -f "$dir/package.json" ]; then
+            project_name=$(basename "$dir")
+            
+            # 智能查找入口文件 (按优先级查找)
+            entry_path=""
+            for entry in "src/index.ts" "index.ts" "src/index.js" "index.js"; do
+                if [ -f "$dir/$entry" ]; then
+                    entry_path="$dir/$entry"
+                    break
+                fi
+            done
+            
+            if [ -z "$entry_path" ]; then
+                echo "⚠️  跳过 $project_name: 未找到入口文件 (index.ts/js)"
+                continue
+            fi
+            
+            echo ""
+            echo "📦 正在构建: $project_name..."
+            
+            # 使用 bun build CLI 构建
+            output_file="$DIST_DIR/mini-service-$project_name.js"
+            
+            if bun build "$entry_path" \
+                --outfile "$output_file" \
+                --target bun \
+                --minify; then
+                echo "✅ $project_name 构建成功 -> $output_file"
+                success_count=$((success_count + 1))
+            else
+                echo "❌ $project_name 构建失败"
+                fail_count=$((fail_count + 1))
+            fi
+        fi
+    done
+    
+    if [ -f ./.zscripts/mini-services-start.sh ]; then
+        cp ./.zscripts/mini-services-start.sh "$DIST_DIR/mini-services-start.sh"
+        chmod +x "$DIST_DIR/mini-services-start.sh"
+    fi
+    
+    echo ""
+    echo "🎉 所有任务完成！"
+    if [ $success_count -gt 0 ] || [ $fail_count -gt 0 ]; then
+        echo "✅ 成功: $success_count 个"
+        if [ $fail_count -gt 0 ]; then
+            echo "❌ 失败: $fail_count 个"
+        fi
+    fi
+}
+
+main
+
+=== /home/z/my-project/.zscripts/mini-services-install.sh ===
+#!/bin/bash
+
+# 配置项
+ROOT_DIR="/home/z/my-project/mini-services"
+
+main() {
+    echo "🚀 开始批量安装依赖..."
+    
+    # 检查 rootdir 是否存在
+    if [ ! -d "$ROOT_DIR" ]; then
+        echo "ℹ️  目录 $ROOT_DIR 不存在，跳过安装"
+        return
+    fi
+    
+    # 统计变量
+    success_count=0
+    fail_count=0
+    failed_projects=""
+    
+    # 遍历 mini-services 目录下的所有文件夹
+    for dir in "$ROOT_DIR"/*; do
+        # 检查是否是目录且包含 package.json
+        if [ -d "$dir" ] && [ -f "$dir/package.json" ]; then
+            project_name=$(basename "$dir")
+            echo ""
+            echo "📦 正在安装依赖: $project_name..."
+            
+            # 进入项目目录并执行 bun install
+            if (cd "$dir" && bun install); then
+                echo "✅ $project_name 依赖安装成功"
+                success_count=$((success_count + 1))
+            else
+                echo "❌ $project_name 依赖安装失败"
+                fail_count=$((fail_count + 1))
+                if [ -z "$failed_projects" ]; then
+                    failed_projects="$project_name"
+                else
+                    failed_projects="$failed_projects $project_name"
+                fi
+            fi
+        fi
+    done
+    
+    # 汇总结果
+    echo ""
+    echo "=================================================="
+    if [ $success_count -gt 0 ] || [ $fail_count -gt 0 ]; then
+        echo "🎉 安装完成！"
+        echo "✅ 成功: $success_count 个"
+        if [ $fail_count -gt 0 ]; then
+            echo "❌ 失败: $fail_count 个"
+            echo ""
+            echo "失败的项目:"
+            for project in $failed_projects; do
+                echo "  - $project"
+            done
+        fi
+    else
+        echo "ℹ️  未找到任何包含 package.json 的项目"
+    fi
+    echo "=================================================="
+}
+
+main
+
+=== /home/z/my-project/.zscripts/mini-services-start.sh ===
+#!/bin/sh
+
+# 配置项
+DIST_DIR="./mini-services-dist"
+
+# 存储所有子进程的 PID
+pids=""
+
+# 清理函数：优雅关闭所有服务
+cleanup() {
+    echo ""
+    echo "🛑 正在关闭所有服务..."
+    
+    # 发送 SIGTERM 信号给所有子进程
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            service_name=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+            echo "   关闭进程 $pid ($service_name)..."
+            kill -TERM "$pid" 2>/dev/null
+        fi
+    done
+    
+    # 等待所有进程退出（最多等待 5 秒）
+    sleep 1
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            # 如果还在运行，等待最多 4 秒
+            timeout=4
+            while [ $timeout -gt 0 ] && kill -0 "$pid" 2>/dev/null; do
+                sleep 1
+                timeout=$((timeout - 1))
+            done
+            # 如果仍然在运行，强制关闭
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "   强制关闭进程 $pid..."
+                kill -KILL "$pid" 2>/dev/null
+            fi
+        fi
+    done
+    
+    echo "✅ 所有服务已关闭"
+}
+
+main() {
+    echo "🚀 开始启动所有 mini services..."
+    
+    # 检查 dist 目录是否存在
+    if [ ! -d "$DIST_DIR" ]; then
+        echo "ℹ️  目录 $DIST_DIR 不存在"
+        return
+    fi
+    
+    # 查找所有 mini-service-*.js 文件
+    service_files=""
+    for file in "$DIST_DIR"/mini-service-*.js; do
+        if [ -f "$file" ]; then
+            if [ -z "$service_files" ]; then
+                service_files="$file"
+            else
+                service_files="$service_files $file"
+            fi
+        fi
+    done
+    
+    # 计算服务文件数量
+    service_count=0
+    for file in $service_files; do
+        service_count=$((service_count + 1))
+    done
+    
+    if [ $service_count -eq 0 ]; then
+        echo "ℹ️  未找到任何 mini service 文件"
+        return
+    fi
+    
+    echo "📦 找到 $service_count 个服务，开始启动..."
+    echo ""
+    
+    # 启动每个服务
+    for file in $service_files; do
+        service_name=$(basename "$file" .js | sed 's/mini-service-//')
+        echo "▶️  启动服务: $service_name..."
+        
+        # 使用 bun 运行服务（后台运行）
+        bun "$file" &
+        pid=$!
+        if [ -z "$pids" ]; then
+            pids="$pid"
+        else
+            pids="$pids $pid"
+        fi
+        
+        # 等待一小段时间检查进程是否成功启动
+        sleep 0.5
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "❌ $service_name 启动失败"
+            # 从字符串中移除失败的 PID
+            pids=$(echo "$pids" | sed "s/\b$pid\b//" | sed 's/  */ /g' | sed 's/^ *//' | sed 's/ *$//')
+        else
+            echo "✅ $service_name 已启动 (PID: $pid)"
+        fi
+    done
+    
+    # 计算运行中的服务数量
+    running_count=0
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            running_count=$((running_count + 1))
+        fi
+    done
+    
+    echo ""
+    echo "🎉 所有服务已启动！共 $running_count 个服务正在运行"
+    echo ""
+    echo "💡 按 Ctrl+C 停止所有服务"
+    echo ""
+    
+    # 等待所有后台进程
+    wait
+}
+
+main
+
+=== /home/z/my-project/.zscripts/python-runtime-build.sh ===
+#!/bin/bash
+
+set -euo pipefail
+
+PROJECT_DIR="${PROJECT_DIR:-/home/z/my-project}"
+BUILD_DIR="${BUILD_DIR:?BUILD_DIR is required}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
+NEXT_DIST_DIR="$BUILD_DIR/next-service-dist"
+PYTHON_RUNTIME_DIR="$BUILD_DIR/python-runtime"
+PYTHON_PACKAGES_DIR="$PYTHON_RUNTIME_DIR/site-packages"
+
+has_python_sources() {
+    find "$PROJECT_DIR" \
+        \( -type d \( -name '.git' \
+        -o -name '.next' \
+        -o -name '.venv' \
+        -o -name 'node_modules' \
+        -o -name '__pycache__' \
+        -o -name 'mini-services' \
+        -o -name 'upload' \
+        -o -name 'download' \
+        \) -prune \) \
+        -o -type f \( -name '*.py' -o -name '*.pyi' \) -print -quit | grep -q .
+}
+
+if ! has_python_sources \
+    && [ ! -f "$PROJECT_DIR/requirements.txt" ] \
+    && [ ! -f "$PROJECT_DIR/pyproject.toml" ]; then
+    echo "ℹ️  未检测到 Python 源码或依赖清单，跳过 Python runtime 构建"
+    exit 0
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "❌ 检测到 Python 项目，但构建环境中没有 uv"
+    exit 1
+fi
+
+echo "🐍 检测到 Python runtime，目标版本: $PYTHON_VERSION"
+mkdir -p "$NEXT_DIST_DIR" "$PYTHON_PACKAGES_DIR"
+
+install_requirements() {
+    local requirements_file="$1"
+    local target_dir="${2:-$PYTHON_PACKAGES_DIR}"
+    if [ ! -s "$requirements_file" ]; then
+        echo "ℹ️  Python 依赖清单为空，跳过依赖安装"
+        return 0
+    fi
+
+    echo "📦 根据 $(basename "$requirements_file") 固化 Python 生产依赖..."
+    uv pip install \
+        --python "$PYTHON_VERSION" \
+        --target "$target_dir" \
+        --requirements "$requirements_file"
+
+    # --target 生成的 console scripts 会保留构建机 Python 的绝对 shebang。
+    # 改成 Runner 内可解析的 python，并由 start scripts 将该 bin 目录加入 PATH。
+    if [ -d "$target_dir/bin" ]; then
+        for script in "$target_dir"/bin/*; do
+            [ -f "$script" ] || continue
+            perl -0pi -e 's/\A#![^\n]*python[^\n]*\n/#!\/usr\/bin\/env python\n/' "$script"
+        done
+    fi
+}
+
+install_pyproject() {
+    local project_dir="$1"
+    local target_dir="$2"
+    local output_name="$3"
+    local requirements_file="$PYTHON_RUNTIME_DIR/$output_name"
+
+    if [ -f "$project_dir/uv.lock" ]; then
+        uv export \
+            --project "$project_dir" \
+            --frozen \
+            --no-dev \
+            --no-emit-project \
+            --format requirements.txt \
+            --output-file "$requirements_file"
+    else
+        uv pip compile \
+            "$project_dir/pyproject.toml" \
+            --python-version "$PYTHON_VERSION" \
+            --output-file "$requirements_file"
+    fi
+    install_requirements "$requirements_file" "$target_dir"
+}
+
+if [ -f "$PROJECT_DIR/pyproject.toml" ] && [ -f "$PROJECT_DIR/uv.lock" ]; then
+    echo "🔒 使用 pyproject.toml + uv.lock 导出生产依赖..."
+    install_pyproject "$PROJECT_DIR" "$PYTHON_PACKAGES_DIR" "requirements.lock.txt"
+elif [ -f "$PROJECT_DIR/requirements.txt" ]; then
+    cp "$PROJECT_DIR/requirements.txt" "$PYTHON_RUNTIME_DIR/requirements.txt"
+    install_requirements "$PYTHON_RUNTIME_DIR/requirements.txt"
+elif [ -f "$PROJECT_DIR/pyproject.toml" ]; then
+    echo "📦 pyproject.toml 未配套 uv.lock，解析生产依赖..."
+    install_pyproject "$PROJECT_DIR" "$PYTHON_PACKAGES_DIR" "requirements.txt"
+else
+    echo "⚠️  检测到 Python 源码，但没有 requirements.txt 或 pyproject.toml；仅支持 Python 标准库"
+fi
+
+if has_python_sources; then
+    echo "📄 复制 Python 源码到部署项目，保持相对路径..."
+    (
+        cd "$PROJECT_DIR"
+        find . \
+            \( -type d \( -name '.git' \
+            -o -name '.next' \
+            -o -name '.venv' \
+            -o -name 'node_modules' \
+            -o -name '__pycache__' \
+            -o -name 'mini-services' \
+            -o -name 'upload' \
+            -o -name 'download' \
+            \) -prune \) \
+            -o -type f \( -name '*.py' -o -name '*.pyi' \) -print0 \
+            | tar --null -T - -cf -
+    ) | tar -C "$NEXT_DIST_DIR" -xf -
+fi
+
+echo "✅ Python runtime 已固化到部署产物"
+=== /home/z/my-project/.zscripts/start.sh ===
+#!/bin/sh
+
+set -e
+
+# 获取脚本所在目录
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_DIR="$SCRIPT_DIR"
+
+# 存储所有子进程的 PID
+pids=""
+
+# 清理函数：优雅关闭所有服务
+cleanup() {
+    echo ""
+    echo "🛑 正在关闭所有服务..."
+    
+    # 发送 SIGTERM 信号给所有子进程
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            service_name=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+            echo "   关闭进程 $pid ($service_name)..."
+            kill -TERM "$pid" 2>/dev/null
+        fi
+    done
+    
+    # 等待所有进程退出（最多等待 5 秒）
+    sleep 1
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            # 如果还在运行，等待最多 4 秒
+            timeout=4
+            while [ $timeout -gt 0 ] && kill -0 "$pid" 2>/dev/null; do
+                sleep 1
+                timeout=$((timeout - 1))
+            done
+            # 如果仍然在运行，强制关闭
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "   强制关闭进程 $pid..."
+                kill -KILL "$pid" 2>/dev/null
+            fi
+        fi
+    done
+    
+    echo "✅ 所有服务已关闭"
+    exit 0
+}
+
+echo "🚀 开始启动所有服务..."
+echo ""
+
+# 切换到构建目录
+cd "$BUILD_DIR" || exit 1
+
+ls -lah
+
+DEFAULT_PACKAGED_DB_PATH="/app/db/custom.db"
+DEFAULT_PACKAGED_DATABASE_URL="file:$DEFAULT_PACKAGED_DB_PATH"
+
+# Python 依赖在构建阶段安装进部署产物，不复用 Sandbox 的 /home/z/.venv。
+# Next.js 及其启动的子进程都会继承这组路径。
+if [ -d "/app/python-runtime/site-packages" ]; then
+    export PYTHONPATH="/app/python-runtime/site-packages:/app/next-service-dist${PYTHONPATH:+:$PYTHONPATH}"
+    export PATH="/app/python-runtime/site-packages/bin:$PATH"
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONUNBUFFERED=1
+    echo "🐍 已启用部署包内 Python runtime: $(python --version 2>&1)"
+fi
+
+# 启动 Next.js 服务器
+if [ -f "./next-service-dist/server.js" ]; then
+    echo "🚀 启动 Next.js 服务器..."
+    cd next-service-dist/ || exit 1
+    
+    # 设置环境变量
+    export NODE_ENV=production
+    export PORT="${PORT:-3000}"
+    export HOSTNAME="${HOSTNAME:-0.0.0.0}"
+    export DATABASE_URL="${DATABASE_URL:-$DEFAULT_PACKAGED_DATABASE_URL}"
+
+    if [ "$DATABASE_URL" = "$DEFAULT_PACKAGED_DATABASE_URL" ]; then
+        if [ ! -f "$DEFAULT_PACKAGED_DB_PATH" ]; then
+            echo "❌ 未找到打包后的数据库文件 $DEFAULT_PACKAGED_DB_PATH"
+            echo "   为避免生产环境启动到空数据库，启动已终止"
+            exit 1
+        fi
+
+        echo "🗄️  当前使用打包数据库: $DEFAULT_PACKAGED_DB_PATH"
+    else
+        echo "🗄️  当前使用外部指定数据库: $DATABASE_URL"
+    fi
+    
+    # 后台启动 Next.js
+    bun server.js &
+    NEXT_PID=$!
+    pids="$NEXT_PID"
+    
+    # 等待一小段时间检查进程是否成功启动
+    sleep 1
+    if ! kill -0 "$NEXT_PID" 2>/dev/null; then
+        echo "❌ Next.js 服务器启动失败"
+        exit 1
+    else
+        echo "✅ Next.js 服务器已启动 (PID: $NEXT_PID, Port: $PORT)"
+    fi
+    
+    cd ../
+else
+    echo "⚠️  未找到 Next.js 服务器文件: ./next-service-dist/server.js"
+fi
+
+# 启动 mini-services
+if [ -f "./mini-services-start.sh" ]; then
+    echo "🚀 启动 mini-services..."
+    
+    # 运行启动脚本（从根目录运行，脚本内部会处理 mini-services-dist 目录）
+    sh ./mini-services-start.sh &
+    MINI_PID=$!
+    pids="$pids $MINI_PID"
+    
+    # 等待一小段时间检查进程是否成功启动
+    sleep 1
+    if ! kill -0 "$MINI_PID" 2>/dev/null; then
+        echo "⚠️  mini-services 可能启动失败，但继续运行..."
+    else
+        echo "✅ mini-services 已启动 (PID: $MINI_PID)"
+    fi
+elif [ -d "./mini-services-dist" ]; then
+    echo "⚠️  未找到 mini-services 启动脚本，但目录存在"
+else
+    echo "ℹ️  mini-services 目录不存在，跳过"
+fi
+
+# 启动 Caddy（如果存在 Caddyfile）
+echo "🚀 启动 Caddy..."
+
+# Caddy 作为前台进程运行（主进程）
+echo "✅ Caddy 已启动（前台运行）"
+echo ""
+echo "🎉 所有服务已启动！"
+echo ""
+echo "💡 按 Ctrl+C 停止所有服务"
+echo ""
+
+# Caddy 作为主进程运行
+exec caddy run --config Caddyfile --adapter caddyfile
+
+---PROCESS TREE (pid 1 area)---
+    2     1 caddy run --config /app/Caddyfile --adapter caddyfile
+  932     1 /bin/bash /app/zcode-driver/boot.sh start
+  949   932 /usr/bin/node /app/zcode-driver/main.mjs
