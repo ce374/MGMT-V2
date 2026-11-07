@@ -125,7 +125,7 @@ export function WorkspaceList({
     <div className="flex-1 flex flex-col items-center px-5 py-16 sm:py-24">
       <div className="w-full max-w-xl">
         {/* creation */}
-        <div className="flex items-center gap-2 border bg-background h-10 px-2">
+        <div className="flex items-center gap-2 border rounded-sm bg-background h-10 px-2">
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -139,7 +139,7 @@ export function WorkspaceList({
           <button
             onClick={create}
             disabled={!name.trim()}
-            className="h-7 px-3 text-xs bg-foreground text-background disabled:opacity-30 btn-quiet flex items-center gap-1.5"
+            className="h-7 px-3 text-xs rounded-sm bg-foreground text-background disabled:opacity-30 btn-quiet flex items-center gap-1.5"
           >
             <CornerDownLeft className="w-3 h-3" />
             create
@@ -155,7 +155,7 @@ export function WorkspaceList({
               no workspaces yet
             </div>
           ) : (
-            <ul className="divide-y border bg-background">
+            <ul className="divide-y border rounded-sm bg-background">
               {items.map((w) => (
                 <li
                   key={w.id}
@@ -179,21 +179,21 @@ export function WorkspaceList({
                         setRenameConfirming(false);
                       }}
                       title="rename"
-                      className="h-7 w-7 grid place-items-center btn-quiet hover:text-foreground hover:bg-accent"
+                      className="h-7 w-7 grid place-items-center rounded-sm btn-quiet hover:text-foreground hover:bg-accent"
                     >
                       <Pencil className="w-3 h-3" />
                     </button>
                     <button
                       onClick={() => setExporting(w)}
                       title="export"
-                      className="h-7 w-7 grid place-items-center btn-quiet hover:text-foreground hover:bg-accent"
+                      className="h-7 w-7 grid place-items-center rounded-sm btn-quiet hover:text-foreground hover:bg-accent"
                     >
                       <Download className="w-3 h-3" />
                     </button>
                     <button
                       onClick={() => setDeleting(w)}
                       title="delete"
-                      className="h-7 w-7 grid place-items-center btn-quiet hover:text-foreground hover:bg-accent"
+                      className="h-7 w-7 grid place-items-center rounded-sm btn-quiet hover:text-foreground hover:bg-accent"
                     >
                       <Trash2 className="w-3 h-3" />
                     </button>
@@ -209,7 +209,7 @@ export function WorkspaceList({
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={importing}
-            className="h-8 px-3 text-xs border btn-quiet flex items-center gap-1.5"
+            className="h-8 px-3 text-xs rounded-sm border btn-quiet flex items-center gap-1.5"
           >
             <Upload className="w-3 h-3" />
             {importing ? "importing…" : "import archive"}
