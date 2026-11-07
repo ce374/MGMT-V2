@@ -233,7 +233,7 @@ export function WorkspaceList({
         open={!!renaming && !renameConfirming}
         onOpenChange={(o) => !o && setRenaming(null)}
       >
-        <DialogContent className="max-w-sm rounded-none">
+        <DialogContent className="max-w-sm rounded-sm">
           <DialogHeader>
             <DialogTitle className="text-sm">rename workspace</DialogTitle>
           </DialogHeader>
@@ -244,7 +244,7 @@ export function WorkspaceList({
               if (e.key === "Enter") setRenameConfirming(true);
             }}
             autoFocus
-            className="w-full h-9 px-2 text-sm bg-transparent border rounded-none outline-none focus:cell-active"
+            className="w-full h-9 px-2 text-sm bg-transparent border rounded-sm outline-none focus:cell-active"
           />
           <DialogFooter className="gap-2">
             <button

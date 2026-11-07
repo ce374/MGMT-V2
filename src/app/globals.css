@@ -37,17 +37,17 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  /* no border radius anywhere — sharp corners throughout */
-  --radius-sm: 0;
-  --radius-md: 0;
-  --radius-lg: 0;
-  --radius-xl: 0;
+  /* a single pixel of border radius everywhere */
+  --radius-sm: 1px;
+  --radius-md: 1px;
+  --radius-lg: 1px;
+  --radius-xl: 1px;
 }
 
 /* strictly monochrome black & white. no accent colors, no gradients, no soft
-   tones, no rounded corners. hairline 1px borders only. */
+   tones. a 1px border radius, hairline 1px borders. */
 :root {
-  --radius: 0;
+  --radius: 1px;
   --background: oklch(1 0 0);
   --foreground: oklch(0.18 0 0);
   --card: oklch(1 0 0);
@@ -205,8 +205,8 @@
   background-color: var(--accent);
 }
 
-/* force sharp corners on radix dialog/alert-dialog sheets */
+/* sharp-ish corners on radix dialog/alert-dialog sheets (1px) */
 [data-radix-dialog-content], [role="alertdialog"] {
-  border-radius: 0 !important;
+  border-radius: 1px !important;
   border: 1px solid var(--border);
 }
