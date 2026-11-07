@@ -8,7 +8,6 @@ import {
   normalizeGrid,
 } from "@/lib/grid-types";
 import { Grid } from "./grid";
-import { ZoomIn, ZoomOut, Maximize } from "lucide-react";
 import { toast } from "sonner";
 
 const MIN_ZOOM = 0.4;
@@ -23,8 +22,7 @@ export function Spreadsheet({ fileId }: { fileId: string }) {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
-  const naturalSizeRef = useRef({ w: 0, h: 0 });
-  const [, forceSize] = useState(0);
+  const [natural, setNatural] = useState({ w: 0, h: 0 });
 
   // working copy + save state
   const gridRef = useRef<GridData>(emptyGrid());
@@ -61,12 +59,7 @@ export function Spreadsheet({ fileId }: { fileId: string }) {
   useEffect(() => {
     const el = surfaceRef.current;
     if (!el) return;
-    const measure = () => {
-      const w = el.scrollWidth;
-      const h = el.scrollHeight;
-      naturalSizeRef.current = { w, h };
-      forceSize((n) => n + 1);
-    };
+    const measure = () => setNatural({ w: el.scrollWidth, h: el.scrollHeight });
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
@@ -95,10 +88,12 @@ export function Spreadsheet({ fileId }: { fileId: string }) {
 
   const handleChange = useCallback(
     (next: GridData) => {
-      const g = normalizeGrid(next);
-      gridRef.current = g;
+      // the data is already structurally valid (mutations keep cells aligned),
+      // so skip the deep normalize walk on every keystroke — the server
+      // normalizes again on save. this keeps large grids responsive.
+      gridRef.current = next;
       dirtyRef.current = true;
-      setGrid(g);
+      setGrid(next);
       scheduleSave();
     },
     [scheduleSave]
@@ -133,7 +128,7 @@ export function Spreadsheet({ fileId }: { fileId: string }) {
     return () => window.removeEventListener("beforeunload", handler);
   }, [fileId]);
 
-  // ---- zoom ----
+  // ---- zoom (gesture only — no visible controls) ----
   // wheel zoom with ctrl (desktop trackpad gesture) or cmd. plain wheel scrolls.
   // pinch on touch is delivered as ctrl+wheel by most browsers.
   useEffect(() => {
@@ -187,36 +182,11 @@ export function Spreadsheet({ fileId }: { fileId: string }) {
     };
   }, [zoom]);
 
-  const nw = naturalSizeRef.current.w * zoom;
-  const nh = naturalSizeRef.current.h * zoom;
+  const nw = natural.w * zoom;
+  const nh = natural.h * zoom;
 
   return (
     <div className="absolute inset-0 flex flex-col bg-background">
-      {/* zoom controls */}
-      <div className="absolute top-2 right-2 z-10 flex items-center gap-0.5 bg-background/90 border rounded-md px-0.5 py-0.5">
-        <button
-          onClick={() => setZoom((z) => clamp(z - 0.1, MIN_ZOOM, MAX_ZOOM))}
-          className="h-6 w-6 grid place-items-center rounded btn-quiet"
-        >
-          <ZoomOut className="w-3 h-3" />
-        </button>
-        <span className="text-[10px] tabular-nums w-9 text-center">
-          {Math.round(zoom * 100)}%
-        </span>
-        <button
-          onClick={() => setZoom((z) => clamp(z + 0.1, MIN_ZOOM, MAX_ZOOM))}
-          className="h-6 w-6 grid place-items-center rounded btn-quiet"
-        >
-          <ZoomIn className="w-3 h-3" />
-        </button>
-        <button
-          onClick={() => setZoom(1)}
-          className="h-6 w-6 grid place-items-center rounded btn-quiet"
-        >
-          <Maximize className="w-3 h-3" />
-        </button>
-      </div>
-
       {/* save indicator */}
       <div className="absolute bottom-2 left-2 z-10 text-[9px] text-muted-foreground tabular-nums">
         {saving ? "saving…" : savedAt ? `saved ${savedAt}` : ""}

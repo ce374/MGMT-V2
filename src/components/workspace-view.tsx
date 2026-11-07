@@ -18,6 +18,7 @@ import {
   X,
   Download,
   PanelLeft,
+  GripVertical,
 } from "lucide-react";
 import {
   Dialog,
@@ -509,15 +510,22 @@ export function WorkspaceView({
           data-row
           data-node-id={node.id}
           data-node-kind={node.kind}
-          onPointerDown={onRowPointerDown(node)}
           className={rowClass(
             "group flex items-center gap-1 h-8 pr-1 relative btn-quiet",
             isDragging && "opacity-40",
             intoTarget && "bg-accent",
             intoTarget && "shadow-[inset_0_0_0_1px_var(--foreground)]"
           )}
-          style={{ paddingLeft: node.depth * 12 + 4 }}
         >
+          {/* drag handle — left edge. press-and-drag to reorder or move. */}
+          <div
+            onPointerDown={onRowPointerDown(node)}
+            className="shrink-0 w-5 h-8 grid place-items-center cursor-grab text-muted-foreground/50 hover:text-foreground active:cursor-grabbing touch-none"
+          >
+            <GripVertical className="w-3 h-3" />
+          </div>
+          {/* indentation by depth */}
+          <div className="shrink-0" style={{ width: node.depth * 12 }} />
           {isFolder ? (
             <button
               data-nodrag
@@ -563,7 +571,7 @@ export function WorkspaceView({
           </button>
           <div
             data-nodrag
-            className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity"
+            className="flex items-center gap-0.5 text-muted-foreground"
           >
             {isFolder && (
               <button
@@ -571,7 +579,7 @@ export function WorkspaceView({
                   setCreatingFolderParent(node.id);
                   setNewFolderName("");
                 }}
-                className="h-6 w-6 grid place-items-center btn-quiet rounded"
+                className="h-6 w-6 grid place-items-center btn-quiet rounded hover:text-foreground"
               >
                 <Plus className="w-3 h-3" />
               </button>
@@ -586,7 +594,7 @@ export function WorkspaceView({
                   setFileNameVal(node.name);
                 }
               }}
-              className="h-6 w-6 grid place-items-center btn-quiet rounded"
+              className="h-6 w-6 grid place-items-center btn-quiet rounded hover:text-foreground"
             >
               <Pencil className="w-2.5 h-2.5" />
             </button>
@@ -595,7 +603,7 @@ export function WorkspaceView({
                 if (isFolder) setDeletingFolder(ws.folders.find((f) => f.id === node.id)!);
                 else setDeletingFile(ws.files.find((f) => f.id === node.id)!);
               }}
-              className="h-6 w-6 grid place-items-center btn-quiet rounded"
+              className="h-6 w-6 grid place-items-center btn-quiet rounded hover:text-foreground"
             >
               <Trash2 className="w-2.5 h-2.5" />
             </button>

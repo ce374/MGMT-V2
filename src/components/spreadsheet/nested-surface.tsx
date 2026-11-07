@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { type GridData, normalizeGrid } from "@/lib/grid-types";
 import { Grid } from "./grid";
-import { ZoomIn, ZoomOut, Maximize } from "lucide-react";
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 2.5;
@@ -11,7 +10,8 @@ const MAX_ZOOM = 2.5;
 // a zoomable, scrollable surface that renders a spreadsheet grid with the same
 // zoom + navigation experience as the main spreadsheet. used for the fullscreen
 // view of a nested spreadsheet. it does not own persistence — the caller passes
-// the grid and receives changes via onChange.
+// the grid and receives changes via onChange. zoom is gesture-only (no visible
+// controls).
 export function NestedSurface({
   grid,
   depth,
@@ -93,31 +93,6 @@ export function NestedSurface({
 
   return (
     <div className="absolute inset-0 flex flex-col bg-background">
-      {/* zoom controls */}
-      <div className="absolute top-2 right-2 z-10 flex items-center gap-0.5 bg-background/90 border rounded-md px-0.5 py-0.5">
-        <button
-          onClick={() => setZoom((z) => clamp(z - 0.1, MIN_ZOOM, MAX_ZOOM))}
-          className="h-6 w-6 grid place-items-center rounded btn-quiet"
-        >
-          <ZoomOut className="w-3 h-3" />
-        </button>
-        <span className="text-[10px] tabular-nums w-9 text-center">
-          {Math.round(zoom * 100)}%
-        </span>
-        <button
-          onClick={() => setZoom((z) => clamp(z + 0.1, MIN_ZOOM, MAX_ZOOM))}
-          className="h-6 w-6 grid place-items-center rounded btn-quiet"
-        >
-          <ZoomIn className="w-3 h-3" />
-        </button>
-        <button
-          onClick={() => setZoom(1)}
-          className="h-6 w-6 grid place-items-center rounded btn-quiet"
-        >
-          <Maximize className="w-3 h-3" />
-        </button>
-      </div>
-
       {/* scrollable surface */}
       <div
         ref={scrollRef}

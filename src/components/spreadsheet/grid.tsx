@@ -18,6 +18,7 @@ import {
 import { AudioCell } from "./audio-cell";
 import { FilePreview, MarkdownEditor } from "./previews";
 import { NestedSurface } from "./nested-surface";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -287,6 +288,7 @@ function ColumnHeader({
   const [menuOpen, setMenuOpen] = useState(false);
   const [resizing, setResizing] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -375,7 +377,7 @@ function ColumnHeader({
           />
         ) : (
           <button
-            onClick={() => {
+            onDoubleClick={() => {
               setVal(col.name);
               setEditing(true);
             }}
@@ -413,8 +415,8 @@ function ColumnHeader({
           <div className="h-px bg-border my-1" />
           <button
             onClick={() => {
-              onRemove();
               setMenuOpen(false);
+              setConfirming(true);
             }}
             className="w-full flex items-center gap-2 px-2 py-1.5 text-[11px] btn-quiet text-left"
           >
@@ -423,6 +425,17 @@ function ColumnHeader({
           </button>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={(o) => !o && setConfirming(false)}
+        title={`delete column "${col.name}"`}
+        description={`this will permanently delete the column "${col.name}" and every cell (including any nested spreadsheets and attachments) in it. this cannot be undone.`}
+        onConfirm={() => {
+          setConfirming(false);
+          onRemove();
+        }}
+      />
 
       {/* resize handle */}
       <div
@@ -470,6 +483,7 @@ function RowView({
   const [resizing, setResizing] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -544,8 +558,8 @@ function RowView({
           >
             <button
               onClick={() => {
-                onRemove();
                 setMenuOpen(false);
+                setConfirming(true);
               }}
               className="w-full flex items-center gap-2 px-2 py-1.5 text-[11px] btn-quiet text-left"
             >
@@ -579,6 +593,17 @@ function RowView({
       <div
         onPointerDown={startResize}
         className="absolute bottom-0 left-0 right-0 h-1 cursor-row-resize hover:bg-foreground/20"
+      />
+
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={(o) => !o && setConfirming(false)}
+        title={`delete row ${index + 1}`}
+        description={`this will permanently delete row ${index + 1} and every cell in it, including any nested spreadsheets and attachments. this cannot be undone.`}
+        onConfirm={() => {
+          setConfirming(false);
+          onRemove();
+        }}
       />
     </div>
   );
@@ -721,7 +746,7 @@ function CellView({
           />
         ) : (
           <button
-            onClick={enterEdit}
+            onDoubleClick={enterEdit}
             className="w-full h-full text-left text-[11px] p-1.5 whitespace-pre-wrap break-words text-muted-foreground"
           >
             {c.value || "—"}
@@ -749,7 +774,7 @@ function CellView({
           />
         ) : (
           <button
-            onClick={enterEdit}
+            onDoubleClick={enterEdit}
             className={cn(
               "w-full h-full text-left text-[11px] px-1.5 truncate",
               !c.value && "text-muted-foreground"
@@ -759,13 +784,28 @@ function CellView({
           </button>
         );
       case "date":
-        return (
+        return editing ? (
           <input
             type="date"
             value={c.value ?? ""}
             onChange={(e) => onValue(e.target.value || null)}
+            onBlur={() => setEditing(false)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === "Escape") setEditing(false);
+            }}
+            autoFocus
             className="w-full h-full bg-transparent outline-none text-[11px] px-1.5 keep-case"
           />
+        ) : (
+          <button
+            onDoubleClick={enterEdit}
+            className={cn(
+              "w-full h-full text-left text-[11px] px-1.5 truncate",
+              !c.value && "text-muted-foreground"
+            )}
+          >
+            {c.value || "—"}
+          </button>
         );
       case "link":
         return c.value && !editing ? (
@@ -774,6 +814,7 @@ function CellView({
             target="_blank"
             rel="noreferrer"
             onClick={(e) => e.stopPropagation()}
+            onDoubleClick={enterEdit}
             className="w-full h-full flex items-center px-1.5 text-[11px] truncate underline underline-offset-2"
           >
             {c.value}
@@ -798,7 +839,7 @@ function CellView({
           />
         ) : (
           <button
-            onClick={enterEdit}
+            onDoubleClick={enterEdit}
             className={cn(
               "w-full h-full text-left text-[11px] px-1.5 truncate",
               !c.value && "text-muted-foreground"
@@ -831,7 +872,7 @@ function CellView({
           />
         ) : (
           <button
-            onClick={enterEdit}
+            onDoubleClick={enterEdit}
             className={cn(
               "w-full h-full text-left text-[11px] px-1.5 truncate",
               !c.value && "text-muted-foreground"
@@ -933,6 +974,7 @@ function NestedGridPanel({
   const w = viewSize?.w ?? DEFAULT_NESTED_W;
   const h = viewSize?.h ?? DEFAULT_NESTED_H;
   const bodyRef = useRef<HTMLDivElement>(null);
+  const [confirming, setConfirming] = useState(false);
 
   // pointer-based resize for width, height, or both. works with mouse and
   // touch alike.
@@ -975,7 +1017,7 @@ function NestedGridPanel({
               <Maximize className="w-2.5 h-2.5" />
             </button>
             <button
-              onClick={onRemove}
+              onClick={() => setConfirming(true)}
               className="h-5 w-5 grid place-items-center rounded btn-quiet"
             >
               <Trash2 className="w-2.5 h-2.5" />
@@ -1023,6 +1065,18 @@ function NestedGridPanel({
           />,
           document.body
         )}
+
+      {/* delete confirmation — identifies the nested spreadsheet by size */}
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={(o) => !o && setConfirming(false)}
+        title="delete nested spreadsheet"
+        description={`this will permanently delete this nested spreadsheet (${grid.rows.length} ${grid.rows.length === 1 ? "row" : "rows"} · ${grid.columns.length} ${grid.columns.length === 1 ? "col" : "cols"}) and all cells, deeper nested spreadsheets, and attachments inside it. this cannot be undone.`}
+        onConfirm={() => {
+          setConfirming(false);
+          onRemove();
+        }}
+      />
     </>
   );
 }
@@ -1168,7 +1222,7 @@ function MarkdownCell({
   return (
     <>
       <button
-        onClick={() => setShow(true)}
+        onDoubleClick={() => setShow(true)}
         className="w-full h-full min-h-[40px] text-left text-[11px] p-1.5 text-muted-foreground truncate"
       >
         {value ? value.slice(0, 40) + (value.length > 40 ? "…" : "") : "md"}

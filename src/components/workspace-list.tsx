@@ -103,10 +103,10 @@ export function WorkspaceList({
   };
 
   return (
-    <div className="flex-1 flex flex-col items-center px-5 py-16 sm:py-24">
+    <div className="flex-1 flex flex-col items-center px-5 py-16 sm:py-24 grouped-bg">
       <div className="w-full max-w-xl">
         {/* creation */}
-        <div className="flex items-center gap-2 border rounded-md bg-background h-10 px-2">
+        <div className="flex items-center gap-2 border rounded-xl bg-background h-11 px-3 shadow-[var(--shadow-sm)]">
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -120,7 +120,7 @@ export function WorkspaceList({
           <button
             onClick={create}
             disabled={!name.trim()}
-            className="h-7 px-3 text-xs rounded-md bg-foreground text-background disabled:opacity-30 btn-quiet flex items-center gap-1.5"
+            className="ios-btn-primary h-8 px-3.5 text-xs rounded-lg disabled:opacity-30 disabled:shadow-none flex items-center gap-1.5"
           >
             <CornerDownLeft className="w-3 h-3" />
             create
@@ -136,45 +136,48 @@ export function WorkspaceList({
               no workspaces yet
             </div>
           ) : (
-            <ul className="divide-y border rounded-md">
+            <ul className="divide-y border rounded-xl overflow-hidden bg-background shadow-[var(--shadow-sm)]">
               {items.map((w) => (
                 <li
                   key={w.id}
-                  className="group flex items-center gap-2 px-2 h-11 btn-quiet"
+                  className="group flex items-center gap-2 px-2 h-12 btn-quiet"
                 >
                   <button
                     onClick={() => onOpen(w.id)}
                     className="flex-1 flex items-center gap-2.5 min-w-0 text-left"
                   >
-                    <Layers className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                    <Layers className="w-4 h-4 text-foreground/70 shrink-0" />
                     <span className="text-sm truncate">{w.name}</span>
                     <span className="text-[10px] text-muted-foreground shrink-0">
                       {w.fileCount} {w.fileCount === 1 ? "file" : "files"}
                     </span>
                   </button>
-                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-1 text-foreground/70">
                     <button
                       onClick={() => {
                         setRenaming(w);
                         setRenameVal(w.name);
                       }}
-                      className="h-7 w-7 grid place-items-center rounded-md btn-quiet"
+                      title="rename"
+                      className="h-8 w-8 grid place-items-center rounded-lg btn-quiet hover:text-foreground hover:bg-accent"
                     >
-                      <Pencil className="w-3 h-3" />
+                      <Pencil className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => {
                         window.location.href = api.exportUrl(w.id);
                       }}
-                      className="h-7 w-7 grid place-items-center rounded-md btn-quiet"
+                      title="export"
+                      className="h-8 w-8 grid place-items-center rounded-lg btn-quiet hover:text-foreground hover:bg-accent"
                     >
-                      <Download className="w-3 h-3" />
+                      <Download className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => setDeleting(w)}
-                      className="h-7 w-7 grid place-items-center rounded-md btn-quiet"
+                      title="delete"
+                      className="h-8 w-8 grid place-items-center rounded-lg btn-quiet hover:text-foreground hover:bg-accent"
                     >
-                      <Trash2 className="w-3 h-3" />
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </li>

@@ -43,9 +43,12 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* monochrome black & white only. no accent colors anywhere in the chrome. */
+/* monochrome black & white only. no accent colors anywhere in the chrome.
+   refined 2016-era ipod/iphone aesthetic: slightly larger radii, soft
+   elevation, gentle gradients on chrome, grouped light-gray backgrounds with
+   white cards. */
 :root {
-  --radius: 0.375rem;
+  --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.18 0 0);
   --card: oklch(1 0 0);
@@ -77,6 +80,12 @@
   --sidebar-accent-foreground: oklch(0.18 0 0);
   --sidebar-border: oklch(0.9 0 0);
   --sidebar-ring: oklch(0.3 0 0);
+  /* the soft "grouped settings" page tone behind white cards */
+  --grouped-bg: oklch(0.952 0 0);
+  /* gentle elevation for sheets, cards, and floating panels */
+  --shadow-sm: 0 1px 2px oklch(0.18 0 0 / 0.06), 0 1px 1px oklch(0.18 0 0 / 0.04);
+  --shadow-md: 0 4px 16px oklch(0.18 0 0 / 0.10), 0 2px 4px oklch(0.18 0 0 / 0.06);
+  --shadow-lg: 0 12px 40px oklch(0.18 0 0 / 0.16), 0 4px 8px oklch(0.18 0 0 / 0.06);
 }
 
 .dark {
@@ -201,4 +210,39 @@
 }
 .btn-quiet:hover {
   background-color: var(--accent);
+}
+
+/* ios-style grouped background — the soft gray behind white cards */
+.grouped-bg {
+  background: var(--grouped-bg);
+}
+
+/* a white, rounded, softly elevated card */
+.ios-card {
+  background: var(--card);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+
+/* primary action button — gentle gloss like an ios button */
+.ios-btn-primary {
+  background: linear-gradient(180deg, oklch(0.24 0 0) 0%, oklch(0.18 0 0) 100%);
+  color: oklch(1 0 0);
+  box-shadow: var(--shadow-sm);
+  transition: filter 0.12s ease, transform 0.05s ease;
+}
+.ios-btn-primary:hover {
+  filter: brightness(1.15);
+}
+.ios-btn-primary:active {
+  transform: translateY(0.5px);
+  filter: brightness(0.95);
+}
+
+/* refine radix dialog/alert-dialog sheets: rounded, soft shadow */
+[data-radix-dialog-content], [role="alertdialog"] {
+  border-radius: var(--radius-xl) !important;
+  box-shadow: var(--shadow-lg) !important;
+  border: 1px solid var(--border);
 }
