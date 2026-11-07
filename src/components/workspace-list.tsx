@@ -250,13 +250,13 @@ export function WorkspaceList({
             <button
               onClick={() => setRenameConfirming(true)}
               disabled={!renameVal.trim() || renameVal.trim() === renaming?.name}
-              className="h-7 px-3 text-xs bg-foreground text-background btn-quiet disabled:opacity-30"
+              className="h-7 px-3 text-xs rounded-sm bg-foreground text-background btn-quiet disabled:opacity-30"
             >
               rename
             </button>
             <button
               onClick={() => setRenaming(null)}
-              className="h-7 px-3 text-xs border btn-quiet"
+              className="h-7 px-3 text-xs rounded-sm border btn-quiet"
             >
               cancel
             </button>
