@@ -1,31 +1,38 @@
-'use client'
+"use client";
 
-export default function Home() {
+import { useCallback, useState } from "react";
+import { WorkspaceList } from "@/components/workspace-list";
+import { WorkspaceView } from "@/components/workspace-view";
+
+export default function Page() {
+  const [view, setView] = useState<
+    | { mode: "list" }
+    | { mode: "workspace"; id: string }
+  >({ mode: "list" });
+
+  // workspace list refresh token — bump to refetch
+  const [token, setToken] = useState(0);
+  const refresh = useCallback(() => setToken((t) => t + 1), []);
+
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      minHeight: '100vh',
-      gap: '2rem',
-      padding: '1rem'
-    }}>
-      <div style={{
-        position: 'relative',
-        width: '6rem',
-        height: '6rem'
-      }}>
-        <img
-          src="/logo.svg"
-          alt="Z.ai Logo"
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'contain'
-          }}
-        />
-      </div>
+    <div className="min-h-screen flex flex-col bg-background">
+      <main className="flex-1 flex flex-col">
+        {view.mode === "list" ? (
+          <WorkspaceList
+            key={token}
+            onOpen={(id) => setView({ mode: "workspace", id })}
+            onChanged={refresh}
+          />
+        ) : (
+          <WorkspaceView
+            workspaceId={view.id}
+            onBack={() => {
+              setView({ mode: "list" });
+              refresh();
+            }}
+          />
+        )}
+      </main>
     </div>
-  )
+  );
 }

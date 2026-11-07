@@ -1,0 +1,1020 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→import { useEffect, useRef, useState } from "react";
+     4→     4→import {
+     5→     5→  type CellDef,
+     6→     6→  type CellType,
+     7→     7→  type ColumnDef,
+     8→     8→  type GridData,
+     9→     9→  type RowDef,
+    10→    10→  CELL_TYPES,
+    11→    11→  CELL_TYPE_LABELS,
+    12→    12→  makeCell,
+    13→    13→  makeColumn,
+    14→    14→  makeRow,
+    15→    15→} from "@/lib/grid-types";
+    16→    16→import { AudioCell } from "./audio-cell";
+    17→    17→import { FilePreview, MarkdownEditor } from "./previews";
+    18→    18→import { api } from "@/lib/api";
+    19→    19→import { cn } from "@/lib/utils";
+    20→    20→import { toast } from "sonner";
+    21→    21→import {
+    22→    22→  Plus,
+    23→    23→  Trash2,
+    24→    24→  GripVertical,
+    25→    25→  ChevronRight,
+    26→    26→  ChevronDown,
+    27→    27→  Image as ImageIcon,
+    28→    28→  Music,
+    29→    29→  FileText,
+    30→    30→  Link2,
+    31→    31→  Hash,
+    32→    32→  Calendar,
+    33→    33→  Type,
+    34→    34→  AlignLeft,
+    35→    35→} from "lucide-react";
+    36→    36→
+    37→    37→// the type icon shown in the column header
+    38→    38→function typeIcon(t: CellType) {
+    39→    39→  const c = "w-3 h-3 text-muted-foreground";
+    40→    40→  switch (t) {
+    41→    41→    case "number":
+    42→    42→      return <Hash className={c} />;
+    43→    43→    case "date":
+    44→    44→      return <Calendar className={c} />;
+    45→    45→    case "link":
+    46→    46→      return <Link2 className={c} />;
+    47→    47→    case "image":
+    48→    48→      return <ImageIcon className={c} />;
+    49→    49→    case "audio":
+    50→    50→      return <Music className={c} />;
+    51→    51→    case "file":
+    52→    52→      return <FileText className={c} />;
+    53→    53→    case "longtext":
+    54→    54→      return <AlignLeft className={c} />;
+    55→    55→    case "markdown":
+    56→    56→      return <FileText className={c} />;
+    57→    57→    default:
+    58→    58→      return <Type className={c} />;
+    59→    59→  }
+    60→    60→}
+    61→    61→
+    62→    62→interface GridProps {
+    63→    63→  data: GridData;
+    64→    64→  onChange: (next: GridData) => void;
+    65→    65→  // depth of nesting (0 = top). affects styling only.
+    66→    66→  depth?: number;
+    67→    67→}
+    68→    68→
+    69→    69→export function Grid({ data, onChange, depth = 0 }: GridProps) {
+    70→    70→  const { columns, rows } = data;
+    71→    71→
+    72→    72→  // ---- column operations ----
+    73→    73→  const updateColumn = (id: string, patch: Partial<ColumnDef>) =>
+    74→    74→    onChange({
+    75→    75→      ...data,
+    76→    76→      columns: columns.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    77→    77→    });
+    78→    78→
+    79→    79→  const addColumn = () => {
+    80→    80→    const idx = columns.length;
+    81→    81→    const col = makeColumn(`field ${idx + 1}`, "text", 180);
+    82→    82→    onChange({
+    83→    83→      ...data,
+    84→    84→      columns: [...columns, col],
+    85→    85→      rows: rows.map((r) => ({ ...r, cells: [...r.cells, makeCell()] })),
+    86→    86→    });
+    87→    87→  };
+    88→    88→
+    89→    89→  const removeColumn = (id: string) => {
+    90→    90→    const i = columns.findIndex((c) => c.id === id);
+    91→    91→    if (i < 0) return;
+    92→    92→    onChange({
+    93→    93→      ...data,
+    94→    94→      columns: columns.filter((c) => c.id !== id),
+    95→    95→      rows: rows.map((r) => ({
+    96→    96→        ...r,
+    97→    97→        cells: r.cells.filter((_, ci) => ci !== i),
+    98→    98→      })),
+    99→    99→    });
+   100→   100→  };
+   101→   101→
+   102→   102→  const reorderColumn = (from: number, to: number) => {
+   103→   103→    if (from === to || from < 0 || to < 0) return;
+   104→   104→    const cols = [...columns];
+   105→   105→    const [moved] = cols.splice(from, 1);
+   106→   106→    cols.splice(to, 0, moved);
+   107→   107→    const newRows = rows.map((r) => {
+   108→   108→      const cells = [...r.cells];
+   109→   109→      const [mc] = cells.splice(from, 1);
+   110→   110→      cells.splice(to, 0, mc);
+   111→   111→      return { ...r, cells };
+   112→   112→    });
+   113→   113→    onChange({ ...data, columns: cols, rows: newRows });
+   114→   114→  };
+   115→   115→
+   116→   116→  // ---- row operations ----
+   117→   117→  const updateRow = (id: string, patch: Partial<RowDef>) =>
+   118→   118→    onChange({
+   119→   119→      ...data,
+   120→   120→      rows: rows.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+   121→   121→    });
+   122→   122→
+   123→   123→  const addRow = () => {
+   124→   124→    const row = makeRow(columns.length, 40);
+   125→   125→    onChange({ ...data, rows: [...rows, row] });
+   126→   126→  };
+   127→   127→
+   128→   128→  const removeRow = (id: string) =>
+   129→   129→    onChange({ ...data, rows: rows.filter((r) => r.id !== id) });
+   130→   130→
+   131→   131→  const reorderRow = (from: number, to: number) => {
+   132→   132→    if (from === to || from < 0 || to < 0) return;
+   133→   133→    const r = [...rows];
+   134→   134→    const [moved] = r.splice(from, 1);
+   135→   135→    r.splice(to, 0, moved);
+   136→   136→    onChange({ ...data, rows: r });
+   137→   137→  };
+   138→   138→
+   139→   139→  // ---- cell operations ----
+   140→   140→  const updateCell = (rowId: string, colId: string, patch: Partial<CellDef>) => {
+   141→   141→    onChange({
+   142→   142→      ...data,
+   143→   143→      rows: rows.map((r) =>
+   144→   144→        r.id === rowId
+   145→   145→          ? {
+   146→   146→              ...r,
+   147→   147→              cells: r.cells.map((c, ci) => {
+   148→   148→                if (columns[ci]?.id !== colId) return c;
+   149→   149→                return { ...c, ...patch };
+   150→   150→              }),
+   151→   151→            }
+   152→   152→          : r
+   153→   153→      ),
+   154→   154→    });
+   155→   155→  };
+   156→   156→
+   157→   157→  const setCellValue = (rowId: string, colId: string, value: string | null) =>
+   158→   158→    updateCell(rowId, colId, { value });
+   159→   159→
+   160→   160→  const setCellNested = (rowId: string, colId: string, nestedGrid: GridData | null) =>
+   161→   161→    updateCell(rowId, colId, { nestedGrid });
+   162→   162→
+   163→   163→  // total width for the sizing wrapper
+   164→   164→  const rowHandleWidth = 34;
+   165→   165→  const addColBtnWidth = 28;
+   166→   166→  const totalWidth =
+   167→   167→    rowHandleWidth +
+   168→   168→    columns.reduce((s, c) => s + c.width, 0) +
+   169→   169→    addColBtnWidth;
+   170→   170→
+   171→   171→  return (
+   172→   172→    <div className="inline-block min-w-full" style={{ width: totalWidth }}>
+   173→   173→      <div className="flex items-stretch border-b">
+   174→   174→        {/* corner */}
+   175→   175→        <div
+   176→   176→          className="shrink-0 border-r bg-muted/40 grid place-items-center"
+   177→   177→          style={{ width: rowHandleWidth }}
+   178→   178→        >
+   179→   179→          <span className="text-[9px] text-muted-foreground">{rows.length}</span>
+   180→   180→        </div>
+   181→   181→        {/* column headers */}
+   182→   182→        {columns.map((col, i) => (
+   183→   183→          <ColumnHeader
+   184→   184→            key={col.id}
+   185→   185→            col={col}
+   186→   186→            index={i}
+   187→   187→            onRename={(name) => updateColumn(col.id, { name })}
+   188→   188→            onType={(type) => updateColumn(col.id, { type })}
+   189→   189→            onWidth={(width) => updateColumn(col.id, { width })}
+   190→   190→            onRemove={() => removeColumn(col.id)}
+   191→   191→            onReorder={reorderColumn}
+   192→   192→          />
+   193→   193→        ))}
+   194→   194→        {/* add column */}
+   195→   195→        <div className="shrink-0 flex" style={{ width: addColBtnWidth }}>
+   196→   196→          <button
+   197→   197→            onClick={addColumn}
+   198→   198→            className="w-full grid place-items-center btn-quiet text-muted-foreground"
+   199→   199→          >
+   200→   200→            <Plus className="w-3 h-3" />
+   201→   201→          </button>
+   202→   202→        </div>
+   203→   203→      </div>
+   204→   204→
+   205→   205→      {/* rows */}
+   206→   206→      <div>
+   207→   207→        {rows.map((row, ri) => (
+   208→   208→          <RowView
+   209→   209→            key={row.id}
+   210→   210→            row={row}
+   211→   211→            index={ri}
+   212→   212→            columns={columns}
+   213→   213→            rowHandleWidth={rowHandleWidth}
+   214→   214→            onHeight={(height) => updateRow(row.id, { height })}
+   215→   215→            onRemove={() => removeRow(row.id)}
+   216→   216→            onReorder={reorderRow}
+   217→   217→            onCellValue={(colId, value) => setCellValue(row.id, colId, value)}
+   218→   218→            onCellAttachment={(colId, attachmentId, filename) =>
+   219→   219→              updateCell(row.id, colId, {
+   220→   220→                attachmentId,
+   221→   221→                value: filename ?? null,
+   222→   222→              })
+   223→   223→            }
+   224→   224→            onCellClearAttachment={(colId) =>
+   225→   225→              updateCell(row.id, colId, { attachmentId: null, value: null })
+   226→   226→            }
+   227→   227→            onCellNested={(colId, nestedGrid) =>
+   228→   228→              setCellNested(row.id, colId, nestedGrid)
+   229→   229→            }
+   230→   230→          />
+   231→   231→        ))}
+   232→   232→        {rows.length === 0 && (
+   233→   233→          <div className="h-16 grid place-items-center text-[10px] text-muted-foreground">
+   234→   234→            empty
+   235→   235→          </div>
+   236→   236→        )}
+   237→   237→      </div>
+   238→   238→
+   239→   239→      {/* add row */}
+   240→   240→      <button
+   241→   241→        onClick={addRow}
+   242→   242→        className="h-8 w-full flex items-center gap-1.5 px-2 text-[10px] text-muted-foreground btn-quiet border-b"
+   243→   243→      >
+   244→   244→        <Plus className="w-3 h-3" />
+   245→   245→        add row
+   246→   246→      </button>
+   247→   247→    </div>
+   248→   248→  );
+   249→   249→}
+   250→   250→
+   251→   251→// ---- column header ----
+   252→   252→function ColumnHeader({
+   253→   253→  col,
+   254→   254→  index,
+   255→   255→  onRename,
+   256→   256→  onType,
+   257→   257→  onWidth,
+   258→   258→  onRemove,
+   259→   259→  onReorder,
+   260→   260→}: {
+   261→   261→  col: ColumnDef;
+   262→   262→  index: number;
+   263→   263→  onRename: (name: string) => void;
+   264→   264→  onType: (type: CellType) => void;
+   265→   265→  onWidth: (width: number) => void;
+   266→   266→  onRemove: () => void;
+   267→   267→  onReorder: (from: number, to: number) => void;
+   268→   268→}) {
+   269→   269→  const [editing, setEditing] = useState(false);
+   270→   270→  const [val, setVal] = useState(col.name);
+   271→   271→  const [menuOpen, setMenuOpen] = useState(false);
+   272→   272→  const [resizing, setResizing] = useState(false);
+   273→   273→  const [dragOver, setDragOver] = useState(false);
+   274→   274→  const menuRef = useRef<HTMLDivElement>(null);
+   275→   275→
+   276→   276→  useEffect(() => {
+   277→   277→    if (!menuOpen) return;
+   278→   278→    const handler = (e: MouseEvent) => {
+   279→   279→      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+   280→   280→        setMenuOpen(false);
+   281→   281→      }
+   282→   282→    };
+   283→   283→    document.addEventListener("mousedown", handler);
+   284→   284→    return () => document.removeEventListener("mousedown", handler);
+   285→   285→  }, [menuOpen]);
+   286→   286→
+   287→   287→  const startResize = (e: React.PointerEvent) => {
+   288→   288→    e.preventDefault();
+   289→   289→    e.stopPropagation();
+   290→   290→    setResizing(true);
+   291→   291→    const startX = e.clientX;
+   292→   292→    const startWidth = col.width;
+   293→   293→    const move = (ev: PointerEvent) => {
+   294→   294→      const dx = ev.clientX - startX;
+   295→   295→      onWidth(Math.max(60, startWidth + dx));
+   296→   296→    };
+   297→   297→    const up = () => {
+   298→   298→      setResizing(false);
+   299→   299→      window.removeEventListener("pointermove", move);
+   300→   300→      window.removeEventListener("pointerup", up);
+   301→   301→    };
+   302→   302→    window.addEventListener("pointermove", move);
+   303→   303→    window.addEventListener("pointerup", up);
+   304→   304→  };
+   305→   305→
+   306→   306→  return (
+   307→   307→    <div
+   308→   308→      draggable={!editing && !resizing}
+   309→   309→      onDragStart={(e) => {
+   310→   310→        e.dataTransfer.setData("text/col", String(index));
+   311→   311→        e.dataTransfer.effectAllowed = "move";
+   312→   312→      }}
+   313→   313→      onDragOver={(e) => {
+   314→   314→        if (e.dataTransfer.types.includes("text/col")) {
+   315→   315→          e.preventDefault();
+   316→   316→          setDragOver(true);
+   317→   317→        }
+   318→   318→      }}
+   319→   319→      onDragLeave={() => setDragOver(false)}
+   320→   320→      onDrop={(e) => {
+   321→   321→        e.preventDefault();
+   322→   322→        setDragOver(false);
+   323→   323→        const from = Number(e.dataTransfer.getData("text/col"));
+   324→   324→        if (!Number.isNaN(from)) onReorder(from, index);
+   325→   325→      }}
+   326→   326→      className={cn(
+   327→   327→        "relative shrink-0 border-r bg-muted/30 flex items-center group select-none",
+   328→   328→        dragOver && "bg-accent"
+   329→   329→      )}
+   330→   330→      style={{ width: col.width }}
+   331→   331→    >
+   332→   332→      <button
+   333→   333→        onClick={() => setMenuOpen((o) => !o)}
+   334→   334→        className="h-7 px-1.5 flex items-center gap-1 btn-quiet shrink-0"
+   335→   335→      >
+   336→   336→        {typeIcon(col.type)}
+   337→   337→      </button>
+   338→   338→      <div className="flex-1 min-w-0">
+   339→   339→        {editing ? (
+   340→   340→          <input
+   341→   341→            value={val}
+   342→   342→            onChange={(e) => setVal(e.target.value)}
+   343→   343→            onBlur={() => {
+   344→   344→              onRename(val.trim() || "field");
+   345→   345→              setEditing(false);
+   346→   346→            }}
+   347→   347→            onKeyDown={(e) => {
+   348→   348→              if (e.key === "Enter") {
+   349→   349→                onRename(val.trim() || "field");
+   350→   350→                setEditing(false);
+   351→   351→              }
+   352→   352→              if (e.key === "Escape") {
+   353→   353→                setVal(col.name);
+   354→   354→                setEditing(false);
+   355→   355→              }
+   356→   356→            }}
+   357→   357→            autoFocus
+   358→   358→            className="w-full h-7 bg-transparent outline-none text-[11px] px-0.5"
+   359→   359→          />
+   360→   360→        ) : (
+   361→   361→          <button
+   362→   362→            onClick={() => {
+   363→   363→              setVal(col.name);
+   364→   364→              setEditing(true);
+   365→   365→            }}
+   366→   366→            className="w-full h-7 text-left text-[11px] px-0.5 truncate"
+   367→   367→            title={col.name}
+   368→   368→          >
+   369→   369→            {col.name}
+   370→   370→          </button>
+   371→   371→        )}
+   372→   372→      </div>
+   373→   373→
+   374→   374→      {/* type + actions menu */}
+   375→   375→      {menuOpen && (
+   376→   376→        <div
+   377→   377→          ref={menuRef}
+   378→   378→          className="absolute top-7 left-0 z-30 w-36 bg-popover border rounded-md shadow-sm py-1"
+   379→   379→        >
+   380→   380→          <div className="px-2 py-1 text-[9px] text-muted-foreground">type</div>
+   381→   381→          {CELL_TYPES.map((t) => (
+   382→   382→            <button
+   383→   383→              key={t}
+   384→   384→              onClick={() => {
+   385→   385→                onType(t);
+   386→   386→                setMenuOpen(false);
+   387→   387→              }}
+   388→   388→              className={cn(
+   389→   389→                "w-full flex items-center gap-2 px-2 py-1.5 text-[11px] btn-quiet text-left",
+   390→   390→                col.type === t && "font-medium"
+   391→   391→              )}
+   392→   392→            >
+   393→   393→              {typeIcon(t)}
+   394→   394→              {CELL_TYPE_LABELS[t]}
+   395→   395→            </button>
+   396→   396→          ))}
+   397→   397→          <div className="h-px bg-border my-1" />
+   398→   398→          <button
+   399→   399→            onClick={() => {
+   400→   400→              onRemove();
+   401→   401→              setMenuOpen(false);
+   402→   402→            }}
+   403→   403→            className="w-full flex items-center gap-2 px-2 py-1.5 text-[11px] btn-quiet text-left"
+   404→   404→          >
+   405→   405→            <Trash2 className="w-3 h-3" />
+   406→   406→            delete column
+   407→   407→          </button>
+   408→   408→        </div>
+   409→   409→      )}
+   410→   410→
+   411→   411→      {/* resize handle */}
+   412→   412→      <div
+   413→   413→        onPointerDown={startResize}
+   414→   414→        className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-foreground/20"
+   415→   415→      />
+   416→   416→    </div>
+   417→   417→  );
+   418→   418→}
+   419→   419→
+   420→   420→// ---- row ----
+   421→   421→function RowView({
+   422→   422→  row,
+   423→   423→  index,
+   424→   424→  columns,
+   425→   425→  rowHandleWidth,
+   426→   426→  onHeight,
+   427→   427→  onRemove,
+   428→   428→  onReorder,
+   429→   429→  onCellValue,
+   430→   430→  onCellAttachment,
+   431→   431→  onCellClearAttachment,
+   432→   432→  onCellNested,
+   433→   433→}: {
+   434→   434→  row: RowDef;
+   435→   435→  index: number;
+   436→   436→  columns: ColumnDef[];
+   437→   437→  rowHandleWidth: number;
+   438→   438→  onHeight: (h: number) => void;
+   439→   439→  onRemove: () => void;
+   440→   440→  onReorder: (from: number, to: number) => void;
+   441→   441→  onCellValue: (colId: string, value: string | null) => void;
+   442→   442→  onCellAttachment: (
+   443→   443→    colId: string,
+   444→   444→    attachmentId: string | null,
+   445→   445→    filename: string | null
+   446→   446→  ) => void;
+   447→   447→  onCellClearAttachment: (colId: string) => void;
+   448→   448→  onCellNested: (colId: string, nestedGrid: GridData | null) => void;
+   449→   449→}) {
+   450→   450→  const [resizing, setResizing] = useState(false);
+   451→   451→  const [dragOver, setDragOver] = useState(false);
+   452→   452→  const [menuOpen, setMenuOpen] = useState(false);
+   453→   453→  const menuRef = useRef<HTMLDivElement>(null);
+   454→   454→
+   455→   455→  useEffect(() => {
+   456→   456→    if (!menuOpen) return;
+   457→   457→    const handler = (e: MouseEvent) => {
+   458→   458→      if (menuRef.current && !menuRef.current.contains(e.target as Node))
+   459→   459→        setMenuOpen(false);
+   460→   460→    };
+   461→   461→    document.addEventListener("mousedown", handler);
+   462→   462→    return () => document.removeEventListener("mousedown", handler);
+   463→   463→  }, [menuOpen]);
+   464→   464→
+   465→   465→  const startResize = (e: React.PointerEvent) => {
+   466→   466→    e.preventDefault();
+   467→   467→    e.stopPropagation();
+   468→   468→    setResizing(true);
+   469→   469→    const startY = e.clientY;
+   470→   470→    const startH = row.height;
+   471→   471→    const move = (ev: PointerEvent) =>
+   472→   472→      onHeight(Math.max(28, startH + (ev.clientY - startY)));
+   473→   473→    const up = () => {
+   474→   474→      setResizing(false);
+   475→   475→      window.removeEventListener("pointermove", move);
+   476→   476→      window.removeEventListener("pointerup", up);
+   477→   477→    };
+   478→   478→    window.addEventListener("pointermove", move);
+   479→   479→    window.addEventListener("pointerup", up);
+   480→   480→  };
+   481→   481→
+   482→   482→  // a row may grow taller than its declared height if its cells contain
+   483→   483→  // nested grids or media. we use min-height so content drives the height.
+   484→   484→  return (
+   485→   485→    <div
+   486→   486→      draggable={!resizing}
+   487→   487→      onDragStart={(e) => {
+   488→   488→        e.dataTransfer.setData("text/row", String(index));
+   489→   489→        e.dataTransfer.effectAllowed = "move";
+   490→   490→      }}
+   491→   491→      onDragOver={(e) => {
+   492→   492→        if (e.dataTransfer.types.includes("text/row")) {
+   493→   493→          e.preventDefault();
+   494→   494→          setDragOver(true);
+   495→   495→        }
+   496→   496→      }}
+   497→   497→      onDragLeave={() => setDragOver(false)}
+   498→   498→      onDrop={(e) => {
+   499→   499→        e.preventDefault();
+   500→   500→        setDragOver(false);
+   501→   501→        const from = Number(e.dataTransfer.getData("text/row"));
+   502→   502→        if (!Number.isNaN(from)) onReorder(from, index);
+   503→   503→      }}
+   504→   504→      className={cn(
+   505→   505→        "flex items-stretch border-b relative group",
+   506→   506→        dragOver && "bg-accent/60"
+   507→   507→      )}
+   508→   508→    >
+   509→   509→      {/* row handle */}
+   510→   510→      <div
+   511→   511→        className="shrink-0 border-r bg-muted/30 flex flex-col items-center justify-center relative"
+   512→   512→        style={{ width: rowHandleWidth, minHeight: row.height }}
+   513→   513→      >
+   514→   514→        <button
+   515→   515→          onClick={() => setMenuOpen((o) => !o)}
+   516→   516→          className="h-5 w-5 grid place-items-center text-muted-foreground btn-quiet rounded"
+   517→   517→        >
+   518→   518→          <GripVertical className="w-3 h-3" />
+   519→   519→        </button>
+   520→   520→        {menuOpen && (
+   521→   521→          <div
+   522→   522→            ref={menuRef}
+   523→   523→            className="absolute top-5 left-0 z-30 w-28 bg-popover border rounded-md shadow-sm py-1"
+   524→   524→          >
+   525→   525→            <button
+   526→   526→              onClick={() => {
+   527→   527→                onRemove();
+   528→   528→                setMenuOpen(false);
+   529→   529→              }}
+   530→   530→              className="w-full flex items-center gap-2 px-2 py-1.5 text-[11px] btn-quiet text-left"
+   531→   531→            >
+   532→   532→              <Trash2 className="w-3 h-3" />
+   533→   533→              delete row
+   534→   534→            </button>
+   535→   535→          </div>
+   536→   536→        )}
+   537→   537→      </div>
+   538→   538→
+   539→   539→      {/* cells */}
+   540→   540→      {columns.map((col, ci) => {
+   541→   541→        const cell = row.cells[ci];
+   542→   542→        return (
+   543→   543→          <CellView
+   544→   544→            key={cell?.id ?? ci}
+   545→   545→            cell={cell}
+   546→   546→            col={col}
+   547→   547→            onValue={(v) => onCellValue(col.id, v)}
+   548→   548→            onAttachment={(aid, fn) => onCellAttachment(col.id, aid, fn)}
+   549→   549→            onClearAttachment={() => onCellClearAttachment(col.id)}
+   550→   550→            onNested={(ng) => onCellNested(col.id, ng)}
+   551→   551→          />
+   552→   552→        );
+   553→   553→      })}
+   554→   554→      <div className="flex-1 border-l-0" />
+   555→   555→
+   556→   556→      {/* row resize handle */}
+   557→   557→      <div
+   558→   558→        onPointerDown={startResize}
+   559→   559→        className="absolute bottom-0 left-0 right-0 h-1 cursor-row-resize hover:bg-foreground/20"
+   560→   560→      />
+   561→   561→    </div>
+   562→   562→  );
+   563→   563→}
+   564→   564→
+   565→   565→// ---- cell ----
+   566→   566→function CellView({
+   567→   567→  cell,
+   568→   568→  col,
+   569→   569→  onValue,
+   570→   570→  onAttachment,
+   571→   571→  onClearAttachment,
+   572→   572→  onNested,
+   573→   573→}: {
+   574→   574→  cell: CellDef | undefined;
+   575→   575→  col: ColumnDef;
+   576→   576→  onValue: (v: string | null) => void;
+   577→   577→  onAttachment: (attachmentId: string | null, filename: string | null) => void;
+   578→   578→  onClearAttachment: () => void;
+   579→   579→  onNested: (nestedGrid: GridData | null) => void;
+   580→   580→}) {
+   581→   581→  // ensure a cell always exists even if row.cells is short
+   582→   582→  const c: CellDef = cell ?? makeCell();
+   583→   583→  const [editing, setEditing] = useState(false);
+   584→   584→  const [val, setVal] = useState(c.value ?? "");
+   585→   585→  const [nestedExpanded, setNestedExpanded] = useState<boolean>(
+   586→   586→    !!c.nestedGrid
+   587→   587→  );
+   588→   588→  const fileRef = useRef<HTMLInputElement>(null);
+   589→   589→
+   590→   590→  const enterEdit = () => {
+   591→   591→    setVal(c.value ?? "");
+   592→   592→    setEditing(true);
+   593→   593→  };
+   594→   594→
+   595→   595→  const hasNested = !!c.nestedGrid;
+   596→   596→
+   597→   597→  const handleUpload = async (file: File) => {
+   598→   598→    try {
+   599→   599→      const att = await api.uploadAttachment(file);
+   600→   600→      onAttachment(att.id, att.filename);
+   601→   601→      toast.success("added");
+   602→   602→    } catch {
+   603→   603→      toast.error("upload failed");
+   604→   604→    }
+   605→   605→  };
+   606→   606→
+   607→   607→  const toggleNested = () => {
+   608→   608→    if (!c.nestedGrid) {
+   609→   609→      // create an empty nested grid with one column + one row
+   610→   610→      const ng: GridData = {
+   611→   611→        columns: [makeColumn("field 1", "text", 160)],
+   612→   612→        rows: [makeRow(1, 36)],
+   613→   613→      };
+   614→   614→      onNested(ng);
+   615→   615→      setNestedExpanded(true);
+   616→   616→    } else {
+   617→   617→      setNestedExpanded((e) => !e);
+   618→   618→    }
+   619→   619→  };
+   620→   620→
+   621→   621→  const renderContent = () => {
+   622→   622→    switch (col.type) {
+   623→   623→      case "image":
+   624→   624→        return c.attachmentId ? (
+   625→   625→          <ImageCell
+   626→   626→            attachmentId={c.attachmentId}
+   627→   627→            filename={c.value ?? ""}
+   628→   628→            onReplace={() => fileRef.current?.click()}
+   629→   629→            onRemove={() => onClearAttachment()}
+   630→   630→          />
+   631→   631→        ) : (
+   632→   632→          <EmptyMedia
+   633→   633→            icon={<ImageIcon className="w-3 h-3" />}
+   634→   634→            onClick={() => fileRef.current?.click()}
+   635→   635→          />
+   636→   636→        );
+   637→   637→      case "audio":
+   638→   638→        return c.attachmentId ? (
+   639→   639→          <AudioCell
+   640→   640→            attachmentId={c.attachmentId}
+   641→   641→            filename={c.value ?? ""}
+   642→   642→            onReplace={() => fileRef.current?.click()}
+   643→   643→            onRemove={() => onClearAttachment()}
+   644→   644→          />
+   645→   645→        ) : (
+   646→   646→          <EmptyMedia
+   647→   647→            icon={<Music className="w-3 h-3" />}
+   648→   648→            onClick={() => fileRef.current?.click()}
+   649→   649→          />
+   650→   650→        );
+   651→   651→      case "file":
+   652→   652→        return c.attachmentId ? (
+   653→   653→          <FileCell
+   654→   654→            attachmentId={c.attachmentId}
+   655→   655→            filename={c.value ?? ""}
+   656→   656→            onReplace={() => fileRef.current?.click()}
+   657→   657→            onRemove={() => onClearAttachment()}
+   658→   658→          />
+   659→   659→        ) : (
+   660→   660→          <EmptyMedia
+   661→   661→            icon={<FileText className="w-3 h-3" />}
+   662→   662→            onClick={() => fileRef.current?.click()}
+   663→   663→          />
+   664→   664→        );
+   665→   665→      case "markdown":
+   666→   666→        return (
+   667→   667→          <MarkdownCell
+   668→   668→            value={c.value}
+   669→   669→            onChange={(v) => onValue(v)}
+   670→   670→          />
+   671→   671→        );
+   672→   672→      case "longtext":
+   673→   673→        return editing ? (
+   674→   674→          <textarea
+   675→   675→            value={val}
+   676→   676→            onChange={(e) => setVal(e.target.value)}
+   677→   677→            onBlur={() => {
+   678→   678→              onValue(val);
+   679→   679→              setEditing(false);
+   680→   680→            }}
+   681→   681→            onKeyDown={(e) => {
+   682→   682→              if (e.key === "Escape") {
+   683→   683→                setVal(c.value ?? "");
+   684→   684→                setEditing(false);
+   685→   685→              }
+   686→   686→            }}
+   687→   687→            autoFocus
+   688→   688→            rows={4}
+   689→   689→            className="w-full h-full min-h-[80px] bg-transparent outline-none text-[11px] p-1.5 resize-y keep-case"
+   690→   690→          />
+   691→   691→        ) : (
+   692→   692→          <button
+   693→   693→            onClick={enterEdit}
+   694→   694→            className="w-full h-full text-left text-[11px] p-1.5 whitespace-pre-wrap break-words text-muted-foreground"
+   695→   695→          >
+   696→   696→            {c.value || "—"}
+   697→   697→          </button>
+   698→   698→        );
+   699→   699→      case "number":
+   700→   700→        return editing ? (
+   701→   701→          <input
+   702→   702→            value={val}
+   703→   703→            onChange={(e) => setVal(e.target.value)}
+   704→   704→            onBlur={() => {
+   705→   705→              onValue(val);
+   706→   706→              setEditing(false);
+   707→   707→            }}
+   708→   708→            onKeyDown={(e) => {
+   709→   709→              if (e.key === "Enter") {
+   710→   710→                onValue(val);
+   711→   711→                setEditing(false);
+   712→   712→              }
+   713→   713→              if (e.key === "Escape") setEditing(false);
+   714→   714→            }}
+   715→   715→            autoFocus
+   716→   716→            inputMode="decimal"
+   717→   717→            className="w-full h-full bg-transparent outline-none text-[11px] px-1.5 keep-case"
+   718→   718→          />
+   719→   719→        ) : (
+   720→   720→          <button
+   721→   721→            onClick={enterEdit}
+   722→   722→            className={cn(
+   723→   723→              "w-full h-full text-left text-[11px] px-1.5 truncate",
+   724→   724→              !c.value && "text-muted-foreground"
+   725→   725→            )}
+   726→   726→          >
+   727→   727→            {c.value || "—"}
+   728→   728→          </button>
+   729→   729→        );
+   730→   730→      case "date":
+   731→   731→        return (
+   732→   732→          <input
+   733→   733→            type="date"
+   734→   734→            value={c.value ?? ""}
+   735→   735→            onChange={(e) => onValue(e.target.value || null)}
+   736→   736→            className="w-full h-full bg-transparent outline-none text-[11px] px-1.5 keep-case"
+   737→   737→          />
+   738→   738→        );
+   739→   739→      case "link":
+   740→   740→        return c.value && !editing ? (
+   741→   741→          <a
+   742→   742→            href={c.value.startsWith("http") ? c.value : `https://${c.value}`}
+   743→   743→            target="_blank"
+   744→   744→            rel="noreferrer"
+   745→   745→            onClick={(e) => e.stopPropagation()}
+   746→   746→            className="w-full h-full flex items-center px-1.5 text-[11px] truncate underline underline-offset-2"
+   747→   747→          >
+   748→   748→            {c.value}
+   749→   749→          </a>
+   750→   750→        ) : editing ? (
+   751→   751→          <input
+   752→   752→            value={val}
+   753→   753→            onChange={(e) => setVal(e.target.value)}
+   754→   754→            onBlur={() => {
+   755→   755→              onValue(val);
+   756→   756→              setEditing(false);
+   757→   757→            }}
+   758→   758→            onKeyDown={(e) => {
+   759→   759→              if (e.key === "Enter") {
+   760→   760→                onValue(val);
+   761→   761→                setEditing(false);
+   762→   762→              }
+   763→   763→            }}
+   764→   764→            autoFocus
+   765→   765→            placeholder="https://"
+   766→   766→            className="w-full h-full bg-transparent outline-none text-[11px] px-1.5 keep-case"
+   767→   767→          />
+   768→   768→        ) : (
+   769→   769→          <button
+   770→   770→            onClick={enterEdit}
+   771→   771→            className={cn(
+   772→   772→              "w-full h-full text-left text-[11px] px-1.5 truncate",
+   773→   773→              !c.value && "text-muted-foreground"
+   774→   774→            )}
+   775→   775→          >
+   776→   776→            {c.value || "—"}
+   777→   777→          </button>
+   778→   778→        );
+   779→   779→      default: // text
+   780→   780→        return editing ? (
+   781→   781→          <input
+   782→   782→            value={val}
+   783→   783→            onChange={(e) => setVal(e.target.value)}
+   784→   784→            onBlur={() => {
+   785→   785→              onValue(val);
+   786→   786→              setEditing(false);
+   787→   787→            }}
+   788→   788→            onKeyDown={(e) => {
+   789→   789→              if (e.key === "Enter") {
+   790→   790→                onValue(val);
+   791→   791→                setEditing(false);
+   792→   792→              }
+   793→   793→              if (e.key === "Escape") {
+   794→   794→                setVal(c.value ?? "");
+   795→   795→                setEditing(false);
+   796→   796→              }
+   797→   797→            }}
+   798→   798→            autoFocus
+   799→   799→            className="w-full h-full bg-transparent outline-none text-[11px] px-1.5 keep-case"
+   800→   800→          />
+   801→   801→        ) : (
+   802→   802→          <button
+   803→   803→            onClick={enterEdit}
+   804→   804→            className={cn(
+   805→   805→              "w-full h-full text-left text-[11px] px-1.5 truncate",
+   806→   806→              !c.value && "text-muted-foreground"
+   807→   807→            )}
+   808→   808→          >
+   809→   809→            {c.value || "—"}
+   810→   810→          </button>
+   811→   811→        );
+   812→   812→    }
+   813→   813→  };
+   814→   814→
+   815→   815→  return (
+   816→   816→    <div
+   817→   817→      className="relative border-r shrink-0 group/cell"
+   818→   818→      style={{ width: col.width, minHeight: 40 }}
+   819→   819→    >
+   820→   820→      <div className="h-full w-full">{renderContent()}</div>
+   821→   821→
+   822→   822→      {/* hidden file input for media uploads */}
+   823→   823→      <input
+   824→   824→        ref={fileRef}
+   825→   825→        type="file"
+   826→   826→        className="hidden"
+   827→   827→        onChange={(e) => {
+   828→   828→          const f = e.target.files?.[0];
+   829→   829→          if (f) handleUpload(f);
+   830→   830→          e.target.value = "";
+   831→   831→        }}
+   832→   832→      />
+   833→   833→
+   834→   834→      {/* nested grid toggle — bottom-right of every cell. always visible
+   835→   835→          but subtle so it works on touch devices (no hover). */}
+   836→   836→      <button
+   837→   837→        onClick={toggleNested}
+   838→   838→        className={cn(
+   839→   839→          "absolute bottom-0.5 right-0.5 h-4 w-4 grid place-items-center rounded-sm btn-quiet transition-opacity",
+   840→   840→          hasNested
+   841→   841→            ? "opacity-90 bg-background border"
+   842→   842→            : "opacity-30 hover:opacity-100"
+   843→   843→        )}
+   844→   844→      >
+   845→   845→        {nestedExpanded ? (
+   846→   846→          <ChevronDown className="w-2.5 h-2.5" />
+   847→   847→        ) : (
+   848→   848→          <ChevronRight className="w-2.5 h-2.5" />
+   849→   849→        )}
+   850→   850→      </button>
+   851→   851→
+   852→   852→      {/* nested grid panel */}
+   853→   853→      {hasNested && nestedExpanded && c.nestedGrid && (
+   854→   854→        <div className="border-t bg-background">
+   855→   855→          <div className="p-1.5">
+   856→   856→            <NestedGridPanel
+   857→   857→              grid={c.nestedGrid}
+   858→   858→              onChange={(ng) => onNested(ng)}
+   859→   859→              onRemove={() => {
+   860→   860→                onNested(null);
+   861→   861→                setNestedExpanded(false);
+   862→   862→              }}
+   863→   863→            />
+   864→   864→          </div>
+   865→   865→        </div>
+   866→   866→      )}
+   867→   867→    </div>
+   868→   868→  );
+   869→   869→}
+   870→   870→
+   871→   871→// a nested grid rendered inline inside a cell. wraps Grid with a header.
+   872→   872→function NestedGridPanel({
+   873→   873→  grid,
+   874→   874→  onChange,
+   875→   875→  onRemove,
+   876→   876→}: {
+   877→   877→  grid: GridData;
+   878→   878→  onChange: (g: GridData) => void;
+   879→   879→  onRemove: () => void;
+   880→   880→}) {
+   881→   881→  return (
+   882→   882→    <div className="border rounded-md overflow-hidden bg-background">
+   883→   883→      <div className="flex items-center justify-between px-1.5 h-6 border-b bg-muted/30">
+   884→   884→        <span className="text-[9px] text-muted-foreground">
+   885→   885→          {grid.rows.length} rows · {grid.columns.length} cols
+   886→   886→        </span>
+   887→   887→        <button
+   888→   888→          onClick={onRemove}
+   889→   889→          className="h-5 w-5 grid place-items-center rounded btn-quiet"
+   890→   890→        >
+   891→   891→          <Trash2 className="w-2.5 h-2.5" />
+   892→   892→        </button>
+   893→   893→      </div>
+   894→   894→      <div className="overflow-x-auto grid-scroll max-h-80">
+   895→   895→        <Grid data={grid} onChange={onChange} depth={1} />
+   896→   896→      </div>
+   897→   897→    </div>
+   898→   898→  );
+   899→   899→}
+   900→   900→
+   901→   901→function EmptyMedia({
+   902→   902→  icon,
+   903→   903→  onClick,
+   904→   904→}: {
+   905→   905→  icon: React.ReactNode;
+   906→   906→  onClick: () => void;
+   907→   907→}) {
+   908→   908→  return (
+   909→   909→    <button
+   910→   910→      onClick={onClick}
+   911→   911→      className="w-full h-full min-h-[40px] grid place-items-center text-muted-foreground btn-quiet"
+   912→   912→    >
+   913→   913→      {icon}
+   914→   914→    </button>
+   915→   915→  );
+   916→   916→}
+   917→   917→
+   918→   918→// media cells live in separate files for clarity
+   919→   919→function ImageCell(props: {
+   920→   920→  attachmentId: string;
+   921→   921→  filename: string;
+   922→   922→  onReplace: () => void;
+   923→   923→  onRemove: () => void;
+   924→   924→}) {
+   925→   925→  return (
+   926→   926→    <div className="relative w-full h-full min-h-[40px] p-1 group/m">
+   927→   927→      <img
+   928→   928→        src={api.attachmentUrl(props.attachmentId)}
+   929→   929→        alt={props.filename}
+   930→   930→        className="w-full h-full max-h-64 object-contain rounded-sm bg-muted/20"
+   931→   931→      />
+   932→   932→      <div className="absolute top-1 right-1 flex gap-0.5 opacity-0 group-hover/m:opacity-100 transition-opacity">
+   933→   933→        <button
+   934→   934→          onClick={props.onReplace}
+   935→   935→          className="h-5 w-5 grid place-items-center rounded bg-background/90 border btn-quiet"
+   936→   936→        >
+   937→   937→          <Plus className="w-2.5 h-2.5" />
+   938→   938→        </button>
+   939→   939→        <button
+   940→   940→          onClick={props.onRemove}
+   941→   941→          className="h-5 w-5 grid place-items-center rounded bg-background/90 border btn-quiet"
+   942→   942→        >
+   943→   943→          <Trash2 className="w-2.5 h-2.5" />
+   944→   944→        </button>
+   945→   945→      </div>
+   946→   946→    </div>
+   947→   947→  );
+   948→   948→}
+   949→   949→
+   950→   950→function FileCell(props: {
+   951→   951→  attachmentId: string;
+   952→   952→  filename: string;
+   953→   953→  onReplace: () => void;
+   954→   954→  onRemove: () => void;
+   955→   955→}) {
+   956→   956→  const isPdf = props.filename.toLowerCase().endsWith(".pdf");
+   957→   957→  const isMd = /\.(md|markdown|txt)$/i.test(props.filename);
+   958→   958→  const [preview, setPreview] = useState(false);
+   959→   959→  return (
+   960→   960→    <div className="w-full h-full min-h-[40px] p-1 group/m relative">
+   961→   961→      <button
+   962→   962→        onClick={() => (isPdf || isMd ? setPreview(true) : undefined)}
+   963→   963→        className="w-full flex items-center gap-1.5 px-1.5 h-7 rounded border btn-quiet"
+   964→   964→      >
+   965→   965→        <FileText className="w-3 h-3 shrink-0" />
+   966→   966→        <span className="text-[10px] truncate keep-case">{props.filename}</span>
+   967→   967→      </button>
+   968→   968→      <div className="absolute top-1 right-1 flex gap-0.5 opacity-0 group-hover/m:opacity-100 transition-opacity">
+   969→   969→        <button
+   970→   970→          onClick={props.onReplace}
+   971→   971→          className="h-5 w-5 grid place-items-center rounded bg-background/90 border btn-quiet"
+   972→   972→        >
+   973→   973→          <Plus className="w-2.5 h-2.5" />
+   974→   974→        </button>
+   975→   975→        <button
+   976→   976→          onClick={props.onRemove}
+   977→   977→          className="h-5 w-5 grid place-items-center rounded bg-background/90 border btn-quiet"
+   978→   978→        >
+   979→   979→          <Trash2 className="w-2.5 h-2.5" />
+   980→   980→        </button>
+   981→   981→      </div>
+   982→   982→      {preview && (
+   983→   983→        <FilePreview
+   984→   984→          url={api.attachmentUrl(props.attachmentId)}
+   985→   985→          filename={props.filename}
+   986→   986→          onClose={() => setPreview(false)}
+   987→   987→        />
+   988→   988→      )}
+   989→   989→    </div>
+   990→   990→  );
+   991→   991→}
+   992→   992→
+   993→   993→// markdown + file preview imported lazily to keep the main bundle small
+   994→   994→function MarkdownCell({
+   995→   995→  value,
+   996→   996→  onChange,
+   997→   997→}: {
+   998→   998→  value: string | null;
+   999→   999→  onChange: (v: string | null) => void;
+  1000→  1000→}) {
+  1001→  1001→  const [show, setShow] = useState(false);
+  1002→  1002→  return (
+  1003→  1003→    <>
+  1004→  1004→      <button
+  1005→  1005→        onClick={() => setShow(true)}
+  1006→  1006→        className="w-full h-full min-h-[40px] text-left text-[11px] p-1.5 text-muted-foreground truncate"
+  1007→  1007→      >
+  1008→  1008→        {value ? value.slice(0, 40) + (value.length > 40 ? "…" : "") : "md"}
+  1009→  1009→      </button>
+  1010→  1010→      {show && (
+  1011→  1011→        <MarkdownEditor
+  1012→  1012→          value={value ?? ""}
+  1013→  1013→          onChange={(v) => onChange(v)}
+  1014→  1014→          onClose={() => setShow(false)}
+  1015→  1015→        />
+  1016→  1016→      )}
+  1017→  1017→    </>
+  1018→  1018→  );
+  1019→  1019→}
+  1020→  1020→
