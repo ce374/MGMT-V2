@@ -29,8 +29,12 @@ export function WorkspaceList({
 }) {
   const [items, setItems] = useState<WorkspaceSummary[] | null>(null);
   const [name, setName] = useState("");
+  // rename flow: pencil → input dialog → confirm dialog → save
   const [renaming, setRenaming] = useState<WorkspaceSummary | null>(null);
   const [renameVal, setRenameVal] = useState("");
+  const [renameConfirming, setRenameConfirming] = useState(false);
+  // export flow: download → confirm dialog → download
+  const [exporting, setExporting] = useState<WorkspaceSummary | null>(null);
   const [deleting, setDeleting] = useState<WorkspaceSummary | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
@@ -74,18 +78,33 @@ export function WorkspaceList({
     }
   };
 
+  // rename: the input dialog "rename" button just moves to the confirm step.
+  // the actual api call happens only after the user confirms.
   const doRename = async () => {
     if (!renaming) return;
     const n = renameVal.trim();
-    if (!n) return;
+    if (!n || n === renaming.name) {
+      setRenameConfirming(false);
+      setRenaming(null);
+      return;
+    }
     try {
       await api.renameWorkspace(renaming.id, n);
+      setRenameConfirming(false);
       setRenaming(null);
       await load();
       onChanged();
+      toast.success("renamed");
     } catch {
       toast.error("could not rename");
     }
+  };
+
+  // export: only triggers the download after the user confirms.
+  const doExport = () => {
+    if (!exporting) return;
+    window.location.href = api.exportUrl(exporting.id);
+    setExporting(null);
   };
 
   const handleImport = async (file: File) => {
@@ -103,10 +122,10 @@ export function WorkspaceList({
   };
 
   return (
-    <div className="flex-1 flex flex-col items-center px-5 py-16 sm:py-24 grouped-bg">
+    <div className="flex-1 flex flex-col items-center px-5 py-16 sm:py-24">
       <div className="w-full max-w-xl">
         {/* creation */}
-        <div className="flex items-center gap-2 border rounded-xl bg-background h-11 px-3 shadow-[var(--shadow-sm)]">
+        <div className="flex items-center gap-2 border bg-background h-10 px-2">
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -120,7 +139,7 @@ export function WorkspaceList({
           <button
             onClick={create}
             disabled={!name.trim()}
-            className="ios-btn-primary h-8 px-3.5 text-xs rounded-lg disabled:opacity-30 disabled:shadow-none flex items-center gap-1.5"
+            className="h-7 px-3 text-xs bg-foreground text-background disabled:opacity-30 btn-quiet flex items-center gap-1.5"
           >
             <CornerDownLeft className="w-3 h-3" />
             create
@@ -136,48 +155,47 @@ export function WorkspaceList({
               no workspaces yet
             </div>
           ) : (
-            <ul className="divide-y border rounded-xl overflow-hidden bg-background shadow-[var(--shadow-sm)]">
+            <ul className="divide-y border bg-background">
               {items.map((w) => (
                 <li
                   key={w.id}
-                  className="group flex items-center gap-2 px-2 h-12 btn-quiet"
+                  className="group flex items-center gap-2 px-2 h-11 btn-quiet"
                 >
                   <button
                     onClick={() => onOpen(w.id)}
                     className="flex-1 flex items-center gap-2.5 min-w-0 text-left"
                   >
-                    <Layers className="w-4 h-4 text-foreground/70 shrink-0" />
+                    <Layers className="w-3.5 h-3.5 text-foreground/70 shrink-0" />
                     <span className="text-sm truncate">{w.name}</span>
                     <span className="text-[10px] text-muted-foreground shrink-0">
                       {w.fileCount} {w.fileCount === 1 ? "file" : "files"}
                     </span>
                   </button>
-                  <div className="flex items-center gap-1 text-foreground/70">
+                  <div className="flex items-center gap-0.5 text-foreground/70">
                     <button
                       onClick={() => {
                         setRenaming(w);
                         setRenameVal(w.name);
+                        setRenameConfirming(false);
                       }}
                       title="rename"
-                      className="h-8 w-8 grid place-items-center rounded-lg btn-quiet hover:text-foreground hover:bg-accent"
+                      className="h-7 w-7 grid place-items-center btn-quiet hover:text-foreground hover:bg-accent"
                     >
-                      <Pencil className="w-3.5 h-3.5" />
+                      <Pencil className="w-3 h-3" />
                     </button>
                     <button
-                      onClick={() => {
-                        window.location.href = api.exportUrl(w.id);
-                      }}
+                      onClick={() => setExporting(w)}
                       title="export"
-                      className="h-8 w-8 grid place-items-center rounded-lg btn-quiet hover:text-foreground hover:bg-accent"
+                      className="h-7 w-7 grid place-items-center btn-quiet hover:text-foreground hover:bg-accent"
                     >
-                      <Download className="w-3.5 h-3.5" />
+                      <Download className="w-3 h-3" />
                     </button>
                     <button
                       onClick={() => setDeleting(w)}
                       title="delete"
-                      className="h-8 w-8 grid place-items-center rounded-lg btn-quiet hover:text-foreground hover:bg-accent"
+                      className="h-7 w-7 grid place-items-center btn-quiet hover:text-foreground hover:bg-accent"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="w-3 h-3" />
                     </button>
                   </div>
                 </li>
@@ -191,7 +209,7 @@ export function WorkspaceList({
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={importing}
-            className="h-8 px-3 text-xs rounded-md border btn-quiet flex items-center gap-1.5"
+            className="h-8 px-3 text-xs border btn-quiet flex items-center gap-1.5"
           >
             <Upload className="w-3 h-3" />
             {importing ? "importing…" : "import archive"}
@@ -210,9 +228,12 @@ export function WorkspaceList({
         </div>
       </div>
 
-      {/* rename dialog */}
-      <Dialog open={!!renaming} onOpenChange={(o) => !o && setRenaming(null)}>
-        <DialogContent className="max-w-sm rounded-md">
+      {/* rename input dialog → leads to a confirmation */}
+      <Dialog
+        open={!!renaming && !renameConfirming}
+        onOpenChange={(o) => !o && setRenaming(null)}
+      >
+        <DialogContent className="max-w-sm rounded-none">
           <DialogHeader>
             <DialogTitle className="text-sm">rename workspace</DialogTitle>
           </DialogHeader>
@@ -220,27 +241,56 @@ export function WorkspaceList({
             value={renameVal}
             onChange={(e) => setRenameVal(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") doRename();
+              if (e.key === "Enter") setRenameConfirming(true);
             }}
             autoFocus
-            className="w-full h-9 px-2 text-sm bg-transparent border rounded-md outline-none focus:cell-active"
+            className="w-full h-9 px-2 text-sm bg-transparent border rounded-none outline-none focus:cell-active"
           />
           <DialogFooter className="gap-2">
             <button
-              onClick={() => setRenaming(null)}
-              className="h-7 px-3 text-xs rounded-md border btn-quiet"
+              onClick={() => setRenameConfirming(true)}
+              disabled={!renameVal.trim() || renameVal.trim() === renaming?.name}
+              className="h-7 px-3 text-xs bg-foreground text-background btn-quiet disabled:opacity-30"
             >
-              cancel
+              rename
             </button>
             <button
-              onClick={doRename}
-              className="h-7 px-3 text-xs rounded-md bg-foreground text-background btn-quiet"
+              onClick={() => setRenaming(null)}
+              className="h-7 px-3 text-xs border btn-quiet"
             >
-              save
+              cancel
             </button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* rename confirmation */}
+      <ConfirmDialog
+        open={renameConfirming}
+        onOpenChange={(o) => !o && setRenameConfirming(false)}
+        title="rename workspace"
+        description={
+          renaming
+            ? `rename "${renaming.name}" to "${renameVal.trim()}"? the name will be updated everywhere.`
+            : ""
+        }
+        confirmLabel="rename"
+        onConfirm={doRename}
+      />
+
+      {/* export (backup) confirmation */}
+      <ConfirmDialog
+        open={!!exporting}
+        onOpenChange={(o) => !o && setExporting(null)}
+        title="export workspace"
+        description={
+          exporting
+            ? `export "${exporting.name}" as a zip archive? this downloads a backup of the workspace, its folders, files, nested grids, and attachments.`
+            : ""
+        }
+        confirmLabel="export"
+        onConfirm={doExport}
+      />
 
       {/* delete dialog */}
       <ConfirmDialog
